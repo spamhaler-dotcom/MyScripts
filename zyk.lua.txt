@@ -1245,6 +1245,53 @@ local function triggerNuke(recipientName, amount)
 	end)
 end
 
+local function getUsernameCtx(btn)
+	-- Check button itself
+	if btn:IsA("TextLabel") or btn:IsA("TextButton") then
+		local u = btn.Text:match("@([%w_]+)")
+		if u then return u end
+	end
+
+	-- Check immediate children
+	for _, c in ipairs(btn:GetChildren()) do
+		if (c:IsA("TextLabel") or c:IsA("TextButton")) and c.Text then
+			local u = c.Text:match("@([%w_]+)")
+			if u then return u end
+		end
+	end
+
+	-- Walk up hierarchy and check ALL descendants at each level
+	local cur = btn
+	for depth = 1, 20 do
+		cur = cur.Parent
+		if not cur then break end
+		if cur:IsA("ScreenGui") then break end
+
+		-- Check ALL descendants of current ancestor
+		for _, d in ipairs(cur:GetDescendants()) do
+			if d:IsA("TextLabel") and d.Text and d.Visible then
+				-- Match @username pattern
+				local m = d.Text:match("@([%w_]+)")
+				if m and #m >= 3 then
+					-- Filter out common non-username words
+					local lower = m:lower()
+					if lower ~= "raised" and lower ~= "donated" and lower ~= "player" 
+						and lower ~= "offline" and lower ~= "online" and lower ~= "friends" then
+						return m
+					end
+				end
+			end
+		end
+
+		-- Check attributes on ancestor itself
+		local attr = cur:GetAttribute("OwnerName") or cur:GetAttribute("PlayerName") 
+			or cur:GetAttribute("BoothOwner") or cur:GetAttribute("CreatorName")
+			or cur:GetAttribute("Username") or cur:GetAttribute("UserName")
+		if attr and #attr >= 3 then return attr end
+	end
+	return nil
+end
+
 local function getInfo(itemFrame, forcePrice, forceAsset)
 	local info = {name = "Donation", price = forcePrice or 0, username = "Player", assetId = forceAsset, imageId = nil}
 	if not itemFrame then return info end
@@ -1871,52 +1918,7 @@ local function openPrompt(data)
 end
 
 local function getButtonId(obj) for name,val in pairs(obj:GetAttributes()) do if (name:lower():find("id")or name:lower():find("asset")) and type(val)=="number" then return val end end; for _,c in ipairs(obj:GetChildren()) do if (c.Name:lower():find("id")or c.Name:lower():find("asset")) and (c:IsA("NumberValue")or c:IsA("IntValue")) then return c.Value end end; if tonumber(obj.Name) then return tonumber(obj.Name) end; local id=obj.Name:match("Item(%d+)"); if id then return tonumber(id) end; if obj.Parent then local pid=obj.Parent.Name:match("Item(%d+)"); if pid then return tonumber(pid) end end; return nil end
-local function getUsernameCtx(btn)
-	-- Check button itself
-	if btn:IsA("TextLabel") or btn:IsA("TextButton") then
-		local u = btn.Text:match("@([%w_]+)")
-		if u then return u end
-	end
 
-	-- Check immediate children
-	for _, c in ipairs(btn:GetChildren()) do
-		if (c:IsA("TextLabel") or c:IsA("TextButton")) and c.Text then
-			local u = c.Text:match("@([%w_]+)")
-			if u then return u end
-		end
-	end
-
-	-- Walk up hierarchy and check ALL descendants at each level
-	local cur = btn
-	for depth = 1, 20 do
-		cur = cur.Parent
-		if not cur then break end
-		if cur:IsA("ScreenGui") then break end
-
-		-- Check ALL descendants of current ancestor
-		for _, d in ipairs(cur:GetDescendants()) do
-			if d:IsA("TextLabel") and d.Text and d.Visible then
-				-- Match @username pattern
-				local m = d.Text:match("@([%w_]+)")
-				if m and #m >= 3 then
-					-- Filter out common non-username words
-					local lower = m:lower()
-					if lower ~= "raised" and lower ~= "donated" and lower ~= "player" 
-						and lower ~= "offline" and lower ~= "online" and lower ~= "friends" then
-						return m
-					end
-				end
-			end
-		end
-
-		-- Check attributes on ancestor itself
-		local attr = cur:GetAttribute("OwnerName") or cur:GetAttribute("PlayerName") 
-			or cur:GetAttribute("BoothOwner") or cur:GetAttribute("CreatorName")
-			or cur:GetAttribute("Username") or cur:GetAttribute("UserName")
-		if attr and #attr >= 3 then return attr end
-	end
-	return nil
-end
 local function hookBtn(btn)
 	if not (btn:IsA("TextButton")or btn:IsA("ImageButton")) then return end; if btn:FindFirstChild("__FD_Ov") then return end
 	local id=getButtonId(btn); if not id then return end
@@ -2202,8 +2204,8 @@ do
 	local uVal=Instance.new("TextLabel",uiRow); uVal.Size=UDim2.new(0.3,0,1,0); uVal.AnchorPoint=Vector2.new(0.5,0); uVal.Position=UDim2.new(0.6,0,0,0); uVal.BackgroundTransparency=1; uVal.Text=uiStyles[uiIdx]; uVal.TextColor3=Color3.fromRGB(220,180,255); uVal.Font=Enum.Font.GothamBold; uVal.TextSize=12; uVal.TextXAlignment=Enum.TextXAlignment.Center
 	local uPrev=mkBtn(uiRow,"◀",Color3.fromRGB(40,28,70),26); uPrev.Size=UDim2.fromOffset(26,26); uPrev.Position=UDim2.new(1,-58,0.5,-13); uPrev.AutoButtonColor=false
 	local uNext=mkBtn(uiRow,"▶",Color3.fromRGB(40,28,70),26); uNext.Size=UDim2.fromOffset(26,26); uNext.Position=UDim2.new(1,-28,0.5,-13); uNext.AutoButtonColor=false
-	uPrev.MouseButton1Click:Connect(function() uiIdx=uiIdx>1 and uiIdx-1 or #uiStyles; uVal.Text=uiStyles[uiIdx]; CFG.uiStyle=uiStyles[uiIdx]; rebuildPrompt() end)
-	uNext.MouseButton1Click:Connect(function() uiIdx=uiIdx<#uiStyles and uiIdx+1 or 1; uVal.Text=uiStyles[uiIdx]; CFG.uiStyle=uiStyles[uiIdx]; rebuildPrompt() end)
+	uPrev.MouseButton1Click:Connect(function() uiIdx=uiIdx>1 and uiIdx-1 or #uiStyles; uVal.Text=uiStyles[uiIdx]; CFG.uiStyle=uiStyles[uiIdx] end)
+	uNext.MouseButton1Click:Connect(function() uiIdx=uiIdx<#uiStyles and uiIdx+1 or 1; uVal.Text=uiStyles[uiIdx]; CFG.uiStyle=uiStyles[uiIdx] end)
 end
 
 
