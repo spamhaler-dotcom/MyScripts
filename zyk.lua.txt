@@ -1258,7 +1258,7 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 
 	if not itemFrame then return info end
 
-	-- ── 1. Extract AssetId from ANY attribute with "id" in the name ──
+	-- ── 1. Extract ALL attributes from button ──
 	pcall(function()
 		for attrName, attrVal in pairs(itemFrame:GetAttributes()) do
 			local lower = attrName:lower()
@@ -1274,13 +1274,10 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 			if lower:find("creator") and lower:find("name") and type(attrVal) == "string" and attrVal ~= "" then
 				info.username = attrVal
 			end
-			if lower:find("name") and not lower:find("creator") and not lower:find("display") and type(attrVal) == "string" and attrVal ~= "" and attrVal ~= "Donation" then
-				info.name = attrVal
-			end
 		end
 	end)
 
-	-- ── 2. Walk up and check ALL ancestors' attributes too ──
+	-- ── 2. Walk up ancestors' attributes ──
 	pcall(function()
 		local cur = itemFrame.Parent
 		for _ = 1, 10 do
@@ -1304,8 +1301,38 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 		end
 	end)
 
-	-- ── 3. AGGRESSIVE text search: find @username ANYWHERE in the booth ──
-	-- First, find the booth root by looking for known booth frame names
+	-- ── 3. FALLBACK: Parse price from button text ──
+	if info.price == 0 then
+		pcall(function()
+			-- Check the button itself and its children for price text
+			local sources = {itemFrame}
+			for _, child in ipairs(itemFrame:GetChildren()) do
+				table.insert(sources, child)
+			end
+
+			for _, obj in ipairs(sources) do
+				if obj:IsA("TextButton") or obj:IsA("TextLabel") then
+					local text = obj.Text or ""
+					-- Match patterns: "100", "1,000", "1K", "1.5M", "$100", "100 Robux", "Donate 100"
+					local num = text:match("[$]?([%d,%.]+)[KkMmBb]?")
+					if num then
+						local clean = num:gsub(",", "")
+						local n = tonumber(clean)
+						if n and n > 0 then
+							-- Check for K/M/B suffix in original text
+							if text:find("K") or text:find("k") then n = n * 1e3
+							elseif text:find("M") or text:find("m") then n = n * 1e6
+							elseif text:find("B") or text:find("b") then n = n * 1e9 end
+							info.price = math.floor(n)
+							break
+						end
+					end
+				end
+			end
+		end)
+	end
+
+	-- ── 4. Find booth root and scan for username/displayname ──
 	local boothRoot = nil
 	pcall(function()
 		local cur = itemFrame
@@ -1320,7 +1347,6 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 		end
 	end)
 
-	-- If no booth root found, use the button's ScreenGui or 5-level parent
 	if not boothRoot then
 		pcall(function()
 			local cur = itemFrame
@@ -1332,13 +1358,11 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 				end
 				cur = cur.Parent
 			end
-			if not boothRoot then
-				boothRoot = itemFrame.Parent and itemFrame.Parent.Parent
-			end
+			if not boothRoot then boothRoot = itemFrame.Parent and itemFrame.Parent.Parent end
 		end)
 	end
 
-	-- Search the booth root for @username and display name
+	-- ── 5. Scan booth for username and display name ──
 	if boothRoot then
 		pcall(function()
 			local texts = {}
@@ -1350,8 +1374,7 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 							table.insert(texts, {
 								text = child.Text,
 								name = child.Name,
-								parentName = child.Parent and child.Parent.Name or "",
-								depth = depth
+								obj = child
 							})
 						end
 					end
@@ -1360,67 +1383,78 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 			end
 			scan(boothRoot, 0)
 
-			-- Find @username patterns
+			-- Find @username or username patterns
 			for _, t in ipairs(texts) do
+				-- Pattern: @Username
 				local m = t.text:match("@([%w_]+)")
 				if m and #m >= 3 and m:lower() ~= "playername" then
 					info.username = m
-					-- Look for display name near this @username
-					for _, t2 in ipairs(texts) do
-						if t2.parentName == t.parentName and t2.text ~= t.text and not t2.text:find("@") and #t2.text > 0 and #t2.text < 30 then
-							info.name = t2.text
-							break
+					-- Look for display name in SAME PARENT (sibling)
+					if t.obj and t.obj.Parent then
+						for _, sibling in ipairs(t.obj.Parent:GetChildren()) do
+							if sibling ~= t.obj and (sibling:IsA("TextLabel") or sibling:IsA("TextButton")) then
+								local st = sibling.Text or ""
+								if not st:find("@") and st ~= "Donation" and #st > 0 and #st < 30 and not st:find("'s") then
+									info.name = st
+									break
+								end
+							end
 						end
 					end
 					break
 				end
 			end
 
-			-- If no @ found, look for name labels
+			-- If still no username, look for "Username's stand" pattern
 			if info.username == "Player" then
 				for _, t in ipairs(texts) do
-					local lowerName = t.name:lower()
-					if lowerName:find("username") or lowerName:find("user") or lowerName:find("owner") or lowerName:find("creator") then
-						local clean = t.text:gsub("@", "")
-						if #clean >= 3 then
-							info.username = clean
-							break
-						end
+					local user = t.text:match("^([%w_]+)'s%s+[Ss]tand")
+					if user and #user >= 3 then
+						info.username = user
+						break
 					end
-					if lowerName:find("display") or lowerName:find("name") then
-						if not t.text:find("@") and #t.text > 0 and #t.text < 30 then
-							info.name = t.text
+				end
+			end
+
+			-- If still no display name, look for text that looks like a display name
+			-- (NOT containing @, NOT containing 's, reasonable length)
+			if info.name == "Donation" or info.name == "" then
+				for _, t in ipairs(texts) do
+					local st = t.text
+					if not st:find("@") and not st:find("'s") and st ~= "Donation" and #st > 0 and #st < 25 then
+						-- Prefer text near an ImageLabel (avatar area)
+						if t.obj and t.obj.Parent then
+							for _, sibling in ipairs(t.obj.Parent:GetChildren()) do
+								if sibling:IsA("ImageLabel") then
+									info.name = st
+									break
+								end
+							end
 						end
+						if info.name ~= "Donation" then break end
 					end
 				end
 			end
 		end)
 	end
 
-	-- ── 4. Get username from userId if we have it ──
-	if info.userId and info.userId > 0 then
-		local cached = _userIdCache[info.userId]
+	-- ── 6. Resolve userId from username ──
+	if info.username and info.username ~= "Player" then
+		local cached = _userIdCache[info.username]
 		if cached then
-			info.username = cached
+			info.userId = cached
 		else
 			task.spawn(function()
-				local ok, name = pcall(function() return Players:GetNameFromUserIdAsync(info.userId) end)
-				if ok and name and name ~= "" then
-					_userIdCache[info.userId] = name
+				local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(info.username) end)
+				if ok and uid then
+					info.userId = uid
+					_userIdCache[info.username] = uid
 				end
 			end)
 		end
 	end
 
-	-- ── 5. Resolve userId from username if missing ──
-	if info.username and info.username ~= "Player" and (not info.userId or info.userId == 0) then
-		task.spawn(function()
-			local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(info.username) end)
-			if ok and uid then info.userId = uid end
-		end)
-	end
-
-	-- ── 6. Get product info for image fallback ──
+	-- ── 7. Get product info for image ──
 	if info.assetId then
 		task.spawn(function()
 			local ok, prod = pcall(function()
@@ -1429,9 +1463,6 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 			if ok and prod then
 				if prod.IconImageAssetId and prod.IconImageAssetId > 0 then
 					info.imageId = prod.IconImageAssetId
-				end
-				if prod.Creator and prod.Creator.Name and info.username == "Player" then
-					info.username = prod.Creator.Name
 				end
 			end
 		end)
@@ -1830,18 +1861,28 @@ local function showPurchaseUI(data)
 
 	closeRealPrompts()
 
+	-- Clean username (no 's stand, no spaces)
+	local cleanUsername = data.username or "Playername"
+	cleanUsername = cleanUsername:gsub("'s [Ss]tand", ""):gsub("'s", ""):gsub("%s+$", "")
+
+	-- Display name fallback chain: explicit name → username → "Player Name"
+	local displayName = data.name
+	if not displayName or displayName == "Donation" or displayName == "" then
+		displayName = cleanUsername
+	end
+
 	-- Update text fields
-	playerNameLbl.Text = data.name ~= "Donation" and data.name ~= "" and data.name or (data.username or "Player Name")
-	userHandleLbl.Text = "@" .. (data.username or "Playername")
+	playerNameLbl.Text = displayName
+	userHandleLbl.Text = "@" .. cleanUsername
 	amountText.Text = fmt(data.price or 0)
 
-	-- Update avatar (deferred)
+	-- Update avatar (deferred, loads from username's userId)
 	task.spawn(function()
 		local targetUserId = data.userId
-		local targetUsername = data.username
+		local targetUsername = cleanUsername
 
-		-- Try to get userId from username if missing
-		if not targetUserId and targetUsername and targetUsername ~= "Player" then
+		-- Resolve userId from username if missing
+		if not targetUserId and targetUsername and targetUsername ~= "Player" and targetUsername ~= "Playername" then
 			local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(targetUsername) end)
 			if ok and uid then
 				targetUserId = uid
@@ -2035,11 +2076,11 @@ local function hookBtn(btn)
 	ov.Parent = btn
 
 	ov.MouseButton1Click:Connect(function()
-		task.wait() -- prevent lag
+		task.wait()
 
 		local cid = getButtonId(btn) or id
 
-		-- Find booth root first
+		-- Find booth root
 		local boothRoot = nil
 		pcall(function()
 			local cur = btn
@@ -2059,7 +2100,7 @@ local function hookBtn(btn)
 		local forcedUserId = nil
 		local forcedPrice = nil
 
-		-- Scan booth root for all text
+		-- Scan booth root for text
 		if boothRoot then
 			pcall(function()
 				local allText = {}
@@ -2068,7 +2109,10 @@ local function hookBtn(btn)
 					for _, child in ipairs(obj:GetChildren()) do
 						if child:IsA("TextLabel") or child:IsA("TextButton") then
 							if child.Text and child.Visible then
-								table.insert(allText, child.Text)
+								table.insert(allText, {
+									text = child.Text,
+									obj = child
+								})
 							end
 						end
 						scan(child, depth + 1)
@@ -2076,19 +2120,52 @@ local function hookBtn(btn)
 				end
 				scan(boothRoot, 0)
 
-				for _, text in ipairs(allText) do
+				for _, t in ipairs(allText) do
+					local text = t.text
+
+					-- @Username pattern
 					local m = text:match("@([%w_]+)")
 					if m and #m >= 3 and m:lower() ~= "playername" then
 						forcedUsername = m
+						-- Display name = sibling text without @
+						if t.obj and t.obj.Parent then
+							for _, sibling in ipairs(t.obj.Parent:GetChildren()) do
+								if sibling ~= t.obj and (sibling:IsA("TextLabel") or sibling:IsA("TextButton")) then
+									local st = sibling.Text or ""
+									if not st:find("@") and st ~= "Donation" and #st > 0 and #st < 30 and not st:find("'s") then
+										forcedDisplayName = st
+										break
+									end
+								end
+							end
+						end
 					end
-					if not text:find("@") and text ~= "Donation" and #text > 0 and #text < 30 then
-						forcedDisplayName = text
+
+					-- "Username's stand" pattern → extract just username
+					local user = text:match("^([%w_]+)'s%s+[Ss]tand")
+					if user and #user >= 3 then
+						forcedUsername = user
+					end
+
+					-- Price from button text fallback
+					if forcedPrice == 0 or not forcedPrice then
+						local num = text:match("[$]?([%d,%.]+)[KkMmBb]?")
+						if num then
+							local clean = num:gsub(",", "")
+							local n = tonumber(clean)
+							if n and n > 0 then
+								if text:find("K") or text:find("k") then n = n * 1e3
+								elseif text:find("M") or text:find("m") then n = n * 1e6
+								elseif text:find("B") or text:find("b") then n = n * 1e9 end
+								forcedPrice = math.floor(n)
+							end
+						end
 					end
 				end
 			end)
 		end
 
-		-- Also check button and immediate parent attributes
+		-- Check attributes on button and parents
 		pcall(function()
 			for _, obj in ipairs({btn, btn.Parent, btn.Parent and btn.Parent.Parent}) do
 				if not obj then continue end
@@ -2119,7 +2196,7 @@ local function hookBtn(btn)
 			info.userId = forcedUserId
 		end
 
-		-- Resolve userId from username if still missing
+		-- Resolve userId from username if missing
 		if info.username and info.username ~= "Player" and (not info.userId or info.userId == 0) then
 			task.spawn(function()
 				local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(info.username) end)
