@@ -1815,9 +1815,12 @@ local activePrompt = {
 	end
 }
 
--- Remove old UI style toggles from Settings tab since we only use new UI now
--- (Optional: keep krato/v3 as fallback by storing them in variables before this)
-
+local function openPrompt(data)
+	if CFG.isMenuOpen then return end
+	closeRealPrompts()
+	CFG.currentPurchase = data
+	activePrompt.open(data)
+end
 
 
 local function getButtonId(obj) for name,val in pairs(obj:GetAttributes()) do if (name:lower():find("id")or name:lower():find("asset")) and type(val)=="number" then return val end end; for _,c in ipairs(obj:GetChildren()) do if (c.Name:lower():find("id")or c.Name:lower():find("asset")) and (c:IsA("NumberValue")or c:IsA("IntValue")) then return c.Value end end; if tonumber(obj.Name) then return tonumber(obj.Name) end; local id=obj.Name:match("Item(%d+)"); if id then return tonumber(id) end; if obj.Parent then local pid=obj.Parent.Name:match("Item(%d+)"); if pid then return tonumber(pid) end end; return nil end
