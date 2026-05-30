@@ -1342,12 +1342,11 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 	end
 
 	-- Try MarketplaceService for extra info (but DON'T let it overwrite our attrPrice)
-	if info.assetId then
+	if info.assetId and MarketplaceService and MarketplaceService.GetProductInfo then
 		local ok, prod = pcall(function()
 			return MarketplaceService:GetProductInfo(info.assetId, Enum.InfoType.GamePass)
 		end)
-		print("GetProductInfo ok:", ok, "PriceInRobux:", ok and prod and prod.PriceInRobux)
-		if ok and prod then
+		pcall(function() print("GetProductInfo ok:", ok, "PriceInRobux:", ok and prod and prod.PriceInRobux) end)		if ok and prod then
 			if prod.Name and prod.Name ~= "" then info.name = prod.Name end
 			if prod.IconImageAssetId and prod.IconImageAssetId > 0 then info.imageId = prod.IconImageAssetId end
 			if prod.Creator and prod.Creator.Name then info.username = prod.Creator.Name end
@@ -1359,7 +1358,7 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 		end
 	end
 
-	print("Final price:", info.price, "assetId:", info.assetId, "username:", info.username)
+	pcall(function() print("Final price:", info.price, "assetId:", info.assetId, "username:", info.username) end)
 	return info
 end
 
@@ -1928,6 +1927,7 @@ local function hookBtn(btn)
 	ov.MouseButton1Click:Connect(function()
 		local cid = getButtonId(btn) or id
 		local info = getInfo(btn, 0, cid)
+		if not info then return end
 		if info.username == "Player" then
 			local u = getUsernameCtx(btn)
 			if u then info.username = u end
