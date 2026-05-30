@@ -1,0 +1,2093 @@
+local Players            = game:GetService("Players")
+local TweenService       = game:GetService("TweenService")
+local UserInputService   = game:GetService("UserInputService")
+local RunService         = game:GetService("RunService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local CoreGui            = game:GetService("CoreGui")
+local CollectionService  = game:GetService("CollectionService")
+local Lighting           = game:GetService("Lighting")
+local Debris             = game:GetService("Debris")
+local player    = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local LP        = player  -- alias used by name tag section
+
+-- ─────────────────────────────────────────────
+-- NAME TAG  (integrated from file 1)
+-- ─────────────────────────────────────────────
+local CUSTOM_NAME      = LP.DisplayName
+local badgeVisible     = false
+local vipVisible       = false
+local verifiedVisible  = false
+local ownerMode        = false   -- false = "Developer"  true = "Owner | Dev"
+
+local activeBadges     = {}   -- dev badge frames
+local activeDevLabels  = {}   -- dev text labels (for owner mode text swap)
+local activeVip        = {}   -- vip badge frames
+local activeVerified   = {}   -- verified containers
+local activeTop        = {}   -- top badge frames
+
+local function makeBadge(parent, text, color, zBase)
+	local frame               = Instance.new("Frame")
+	frame.AutomaticSize       = Enum.AutomaticSize.X
+	frame.Size                = UDim2.new(0, 0, 0, 20)
+	frame.BackgroundColor3    = color
+	frame.BackgroundTransparency = 0.02
+	frame.BorderSizePixel     = 0
+	frame.ZIndex              = zBase
+	frame.Parent              = parent
+
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(1, 0)
+
+	local pad              = Instance.new("UIPadding", frame)
+	pad.PaddingLeft        = UDim.new(0, 9)
+	pad.PaddingRight       = UDim.new(0, 9)
+
+	local lbl              = Instance.new("TextLabel")
+	lbl.AutomaticSize      = Enum.AutomaticSize.X
+	lbl.Size               = UDim2.new(0, 0, 1, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text               = text
+	lbl.TextColor3         = Color3.fromRGB(255, 255, 255)
+	lbl.TextSize           = 11
+	lbl.Font               = Enum.Font.GothamBold
+	lbl.TextXAlignment     = Enum.TextXAlignment.Center
+	lbl.ZIndex             = zBase + 1
+	lbl.Parent             = frame
+
+	return frame, lbl
+end
+
+local function applyNameTag(character)
+	local head     = character:WaitForChild("Head")
+	local humanoid = character:WaitForChild("Humanoid")
+	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+
+	-- clear old tracking tables
+	table.clear(activeBadges)
+	table.clear(activeDevLabels)
+	table.clear(activeVip)
+	table.clear(activeVerified)
+	table.clear(activeTop)
+
+	if head:FindFirstChild("CustomNameTag") then
+		head.CustomNameTag:Destroy()
+	end
+
+	local billboard                   = Instance.new("BillboardGui")
+	billboard.Name                    = "CustomNameTag"
+	billboard.Size                    = UDim2.new(0, 240, 0, 65)
+	billboard.StudsOffsetWorldSpace   = Vector3.new(0, 3.2, 0)
+	billboard.AlwaysOnTop             = true
+	billboard.LightInfluence          = 0
+	billboard.Parent                  = head
+
+	-- Badge row (Dev + VIP side by side, centered)
+	local badgeRow                    = Instance.new("Frame")
+	badgeRow.AutomaticSize            = Enum.AutomaticSize.X
+	badgeRow.Size                     = UDim2.new(0, 0, 0, 20)
+	badgeRow.Position                 = UDim2.new(0.5, 0, 0, 8)
+	badgeRow.AnchorPoint              = Vector2.new(0.5, 0)
+	badgeRow.BackgroundTransparency   = 1
+	badgeRow.ZIndex                   = 4
+	badgeRow.Parent                   = billboard
+
+	local bList                       = Instance.new("UIListLayout")
+	bList.FillDirection               = Enum.FillDirection.Horizontal
+	bList.HorizontalAlignment         = Enum.HorizontalAlignment.Center
+	bList.VerticalAlignment           = Enum.VerticalAlignment.Center
+	bList.SortOrder                   = Enum.SortOrder.LayoutOrder
+	bList.Padding                     = UDim.new(0, 4)
+	bList.Parent                      = badgeRow
+
+	-- Developer badge
+	local devFrame, devLbl = makeBadge(badgeRow,
+		ownerMode and "Owner | Dev" or "Developer",
+		Color3.fromRGB(255, 70, 71), 5)
+	devFrame.LayoutOrder   = 1
+	devFrame.Visible       = badgeVisible
+	table.insert(activeBadges, devFrame)
+	table.insert(activeDevLabels, devLbl)
+
+	-- VIP badge
+	local vipFrame, _ = makeBadge(badgeRow, "VIP",
+		Color3.fromRGB(254, 168, 8), 5)
+	vipFrame.LayoutOrder  = 2
+	vipFrame.Visible      = vipVisible
+	table.insert(activeVip, vipFrame)
+
+	-- TOP badge
+	local topFrame, topLbl = makeBadge(badgeRow,
+		"#" .. tostring(CFG and CFG.topBadgeNum or 1),
+		Color3.fromRGB(255, 80, 180), 5)
+	topFrame.LayoutOrder = 3
+	topFrame.Visible     = (CFG and CFG.topBadge == true) or false
+	table.insert(activeTop, topFrame)   -- ← CHANGED from activeBadges
+
+	-- Name row (verified + name label)
+	local nameRow                     = Instance.new("Frame")
+	nameRow.AutomaticSize             = Enum.AutomaticSize.XY
+	nameRow.Size                      = UDim2.new(0, 0, 0, 18)
+	nameRow.Position                  = UDim2.new(0.5, 0, 0, 32)
+	nameRow.AnchorPoint               = Vector2.new(0.5, 0)
+	nameRow.BackgroundTransparency    = 1
+	nameRow.ZIndex                    = 7
+	nameRow.ClipsDescendants          = false
+	nameRow.Parent                    = billboard
+
+	local nList                       = Instance.new("UIListLayout")
+	nList.FillDirection               = Enum.FillDirection.Horizontal
+	nList.VerticalAlignment           = Enum.VerticalAlignment.Center
+	nList.HorizontalAlignment         = Enum.HorizontalAlignment.Center
+	nList.SortOrder                   = Enum.SortOrder.LayoutOrder
+	nList.Padding                     = UDim.new(0, 3)
+	nList.Parent                      = nameRow
+
+	-- Verified badge
+	local verifiedContainer           = Instance.new("Frame")
+	verifiedContainer.Name            = "VerifiedBadge"
+	verifiedContainer.Size            = UDim2.new(0, 16, 0, 16)
+	verifiedContainer.BackgroundTransparency = 1
+	verifiedContainer.LayoutOrder     = 1
+	verifiedContainer.ZIndex          = 8
+	verifiedContainer.Visible         = verifiedVisible
+	verifiedContainer.Parent          = nameRow
+	table.insert(activeVerified, verifiedContainer)
+
+	local blueSquare                  = Instance.new("Frame")
+	blueSquare.Size                   = UDim2.new(1, 0, 1, 0)
+	blueSquare.BackgroundColor3       = Color3.fromRGB(0, 120, 255)
+	blueSquare.BorderSizePixel        = 0
+	blueSquare.Rotation               = 13
+	blueSquare.ZIndex                 = 8
+	blueSquare.Parent                 = verifiedContainer
+	Instance.new("UICorner", blueSquare).CornerRadius = UDim.new(0.2, 0)
+
+	local legShort                    = Instance.new("Frame")
+	legShort.Size                     = UDim2.new(0, 5, 0, 2)
+	legShort.Position                 = UDim2.new(0.5, -4, 0.5, 1)
+	legShort.AnchorPoint              = Vector2.new(0, 0.5)
+	legShort.Rotation                 = 45
+	legShort.BackgroundColor3         = Color3.new(1, 1, 1)
+	legShort.BorderSizePixel          = 0
+	legShort.ZIndex                   = 9
+	legShort.Parent                   = blueSquare
+	Instance.new("UICorner", legShort).CornerRadius = UDim.new(1, 0)
+
+	local legLong                     = Instance.new("Frame")
+	legLong.Size                      = UDim2.new(0, 9, 0, 2)
+	legLong.Position                  = UDim2.new(0.5, -3, 0.5, 0)
+	legLong.AnchorPoint               = Vector2.new(0, 0.5)
+	legLong.Rotation                  = -50
+	legLong.BackgroundColor3          = Color3.new(1, 1, 1)
+	legLong.BorderSizePixel           = 0
+	legLong.ZIndex                    = 9
+	legLong.Parent                    = blueSquare
+	Instance.new("UICorner", legLong).CornerRadius = UDim.new(1, 0)
+
+	-- Name label
+	local nameLabel                   = Instance.new("TextLabel")
+	nameLabel.AutomaticSize           = Enum.AutomaticSize.X
+	nameLabel.Size                    = UDim2.new(0, 0, 0, 18)
+	nameLabel.BackgroundTransparency  = 1
+	nameLabel.LayoutOrder             = 2
+	nameLabel.Text                    = CUSTOM_NAME
+	nameLabel.TextColor3              = Color3.fromRGB(255, 255, 255)
+	nameLabel.TextStrokeTransparency  = 0.55
+	nameLabel.TextStrokeColor3        = Color3.fromRGB(0, 0, 0)
+	nameLabel.TextSize                = 13
+	nameLabel.Font                    = Enum.Font.GothamMedium
+	nameLabel.TextXAlignment          = Enum.TextXAlignment.Left
+	nameLabel.ZIndex                  = 7
+	nameLabel.Parent                  = nameRow
+end
+
+if LP.Character then applyNameTag(LP.Character) end
+LP.CharacterAdded:Connect(applyNameTag)
+
+-- Helper to refresh nametag on the live character
+local function refreshNameTag()
+	if LP.Character then
+		applyNameTag(LP.Character)
+	end
+end
+
+-- ─────────────────────────────────────────────
+-- MAIN SCRIPT (file 2)
+-- ─────────────────────────────────────────────
+
+local STORAGE_KEY    = "FazoxNuke2026_"..tostring(player.UserId)
+local ROBUX_ICON     = "rbxasset://textures/ui/common/robux@3x.png"
+local ROBUX_THUMB    = "rbxthumb://type=Asset&id=11713337409&w=150&h=150"
+local NUKE_THRESHOLD = 10000
+local NUKE_LAND_POS  = Vector3.new(166.436, 6.485, 307.588)
+
+
+
+local SOUNDS = {
+	Click          = "rbxassetid://9671800097",
+	Select         = "rbxassetid://9671800097",
+	Success        = "rbxassetid://14674229054",
+	Error          = "rbxassetid://2865227271",
+	Applause       = "rbxassetid://9009370950",
+	Coins          = "rbxassetid://8982092797",
+	DonationLevel1 = "rbxassetid://15333945695",
+	DonationLevel2 = "rbxassetid://15333946014",
+	DonationLevel3 = "rbxassetid://15333945376",
+	DonationLevel4 = "rbxassetid://15333945889",
+	DonationLevel5 = "rbxassetid://15333945597",
+	FallingCoins   = "rbxassetid://15333946247",
+	NukeAlarm      = "rbxassetid://5156373841",
+	NukePreLaunch  = "rbxassetid://132456187",
+	NukePreThrust  = "rbxassetid://5652831542",
+	NukePreThrust2 = "rbxassetid://8175700177",
+	NukeLaunch     = "rbxassetid://5801273676",
+	NukeThrust     = "rbxassetid://2852749304",
+	NukeFall       = "rbxassetid://121207170835589",
+	NukeLand       = "rbxassetid://7157159568",
+	NukeLandHands  = "rbxassetid://137692077473399",
+	Explosion      = "rbxassetid://7128851174",
+	Explosion2     = "rbxassetid://5801257793",
+	ShakeNuke      = "rbxassetid://100317721519328",
+	NukePopUp      = "rbxassetid://87329228181408",
+	NukeApplause   = "rbxassetid://15333946247",
+}
+local DONATION_SND = {
+	{min=1,      max=99,        snd="DonationLevel1"},
+	{min=100,    max=999,       snd="DonationLevel2"},
+	{min=1000,   max=9999,      snd="DonationLevel3"},
+	{min=10000,  max=99999,     snd="DonationLevel4"},
+	{min=100000, max=math.huge, snd="DonationLevel5"},
+}
+
+local function loadBalance()
+	local ok,v=pcall(function()
+		if isfile and isfile(STORAGE_KEY..".txt") then return tonumber(readfile(STORAGE_KEY..".txt")) or 11637263872 end
+		return 11637263872
+	end)
+	return (ok and v) or 11637263872
+end
+local function saveBalance(n) pcall(function() if writefile then writefile(STORAGE_KEY..".txt",tostring(n)) end end) end
+local CFG = {
+	topBadge = false,
+	topBadgeNum = 1,
+	balance       = loadBalance(),
+	customName    = "", nameEnabled=false, nameColor=Color3.fromRGB(255,255,255),
+	developerBadge=false, vipBadge=false, topBadge=false, topBadgeNum=1, customBadge=false, customBadgeText="", customBadgeColor=Color3.fromRGB(100,100,255),
+	badgeColor    = Color3.fromRGB(255,70,71), badgeText="Developer", showCheckmark=true,
+	enableSounds  = true, updateStandRaised=true, notifStyle="both",
+	nukeEnabled   = true, showOwnedWarning=true, hideOwnBody=true,
+	nukeAlarmDur  = 5, nukeBillboard=true,
+	uiStyle       = "krato",
+	bbLine1       = "{player} Donated",
+	bbLine3       = "{user}",
+	bbUseCustomName = false,
+	bbCustomName    = "",
+	bbCustomProfileId = 0,
+	nukeOnGamepass  = true,
+	purchasedItems={}, balanceLabels={}, processedFrames={},
+	isMenuOpen=false,
+	currentPurchase={name="Donation",price=0,username="Player",assetId=nil,imageId=nil},
+}
+
+local function fmt(n)
+	local s=tostring(math.floor(math.max(0,n)))
+	return s:reverse():gsub("(%d%d%d)","%1,"):reverse():gsub("^,","")
+end
+local function parseN(str)
+	if not str then return nil end
+	local s=tostring(str):gsub(",",""):gsub("%s","")
+	local n,suf=s:match("^(%d+%.?%d*)([KkMmBb]?)$")
+	if n then
+		n=tonumber(n)
+		if suf=="K"or suf=="k" then n=n*1e3
+		elseif suf=="M"or suf=="m" then n=n*1e6
+		elseif suf=="B"or suf=="b" then n=n*1e9 end
+		return math.floor(n)
+	end
+	return tonumber(s)
+end
+
+local _activeNukeSounds = {}
+local function trackSnd(s) if s then table.insert(_activeNukeSounds,s) end; return s end
+local function stopAllNukeSounds()
+	for _,s in ipairs(_activeNukeSounds) do
+		pcall(function() if s and s.Parent then s:Stop(); task.delay(0.1,function() pcall(function() s:Destroy() end) end) end end)
+	end
+	table.clear(_activeNukeSounds)
+end
+
+local function playS(id,vol,pitch,par)
+	if not CFG.enableSounds then return end
+	local s=Instance.new("Sound")
+	s.SoundId=id; s.Volume=vol or 1; s.PlaybackSpeed=pitch or 1
+	s.RollOffMaxDistance=10000; s.Parent=par or workspace; s:Play()
+	s.Ended:Connect(function() pcall(function() s:Destroy() end) end)
+	Debris:AddItem(s,15); return s
+end
+local function playSnd(name,vol,pitch) return playS(SOUNDS[name],vol,pitch) end
+
+local function playDonSnd(amount)
+	if not CFG.enableSounds then return end
+	local sname=DONATION_SND[#DONATION_SND].snd
+	for _,e in ipairs(DONATION_SND) do if amount>=e.min and amount<=e.max then sname=e.snd;break end end
+	playS(SOUNDS[sname],1.5)
+end
+
+local function closeRealPrompts()
+	task.spawn(function()
+		for _=1,8 do
+			pcall(function()
+				for _,g in pairs(CoreGui:GetChildren()) do
+					if g:IsA("ScreenGui") then
+						local l=g.Name:lower()
+						if l:find("purchase")or l:find("prompt")or l:find("marketplace") then
+							g.Enabled=false; task.delay(0.05,function() pcall(function() g:Destroy() end) end)
+						end
+					end
+				end
+			end)
+			task.wait(0.1)
+		end
+	end)
+end
+local function regBal(lbl) table.insert(CFG.balanceLabels,lbl); pcall(function() lbl.Text=fmt(CFG.balance) end) end
+local function unregBal(lbl) for i,v in ipairs(CFG.balanceLabels) do if v==lbl then table.remove(CFG.balanceLabels,i);break end end end
+local function syncBal() for _,lbl in ipairs(CFG.balanceLabels) do pcall(function() if lbl and lbl.Parent then lbl.Text=fmt(CFG.balance) end end) end end
+local function setBal(v) v=math.max(0,math.floor(v)); CFG.balance=v; syncBal(); saveBalance(v) end
+local function parseRaisedNum(t)
+	local clean = t:gsub("[^%d%.KkMmBb]", "")
+	local num, suffix = clean:match("^([%d%.]+)([KkMmBb]?)$")
+	if not num then return 0 end
+	num = tonumber(num) or 0
+	if suffix=="K" or suffix=="k" then num=num*1e3
+	elseif suffix=="M" or suffix=="m" then num=num*1e6
+	elseif suffix=="B" or suffix=="b" then num=num*1e9 end
+	return math.floor(num)
+end
+
+local function formatNum(n)
+	if n>=1e9 then return string.format("%.3gB", n/1e9)
+	elseif n>=1e6 then return string.format("%.3gM", n/1e6)
+	elseif n>=1e3 then return string.format("%.3gK", n/1e3)
+	else return tostring(math.floor(n)) end
+end
+
+local function updateStandUI(amount)
+	if not CFG.updateStandRaised then return end
+	task.spawn(function()
+		pcall(function()
+			for _, f in ipairs(playerGui:GetDescendants()) do
+				if f:IsA("TextLabel") and f.Name == "Raised" then
+					local t = f.Text or "0"
+					local stripped = t:gsub(",", "")
+					local cur = tonumber(stripped:match("%d+")) or 0
+					local newTotal = cur + amount
+					f.Text = t:gsub("[%d,]+", fmt(newTotal), 1)
+					print("Updated Raised:", t, "->", f.Text)
+				end
+			end
+		end)
+	end)
+end
+local function updateLeaderboard(amount)
+	pcall(function()
+		local ccg=playerGui:FindFirstChild("CustomCoreGui"); if not ccg then return end
+		local pl=ccg:FindFirstChild("Playerlist"); if not pl then return end
+		local sf=pl:FindFirstChild("ScrollingFrame"); if not sf then return end
+		local uf=sf:FindFirstChild("User"..tostring(player.UserId)); if not uf then return end
+		local st=uf:FindFirstChild("Stats"); if not st then return end
+		local don=st:FindFirstChild("Donated"); if not don then return end
+		local cur=parseN((don.Text or ""):gsub("[^%d,]","")) or 0
+		for _,c in ipairs(don:GetChildren()) do c:Destroy() end; don.Text=""
+		local ico=Instance.new("ImageLabel"); ico.Size=UDim2.new(0,16,0,16); ico.Position=UDim2.new(0,0,0.5,-8)
+		ico.BackgroundTransparency=1; ico.Image=ROBUX_ICON; ico.ImageColor3=Color3.fromRGB(59,255,56); ico.Parent=don
+		local lbl=Instance.new("TextLabel"); lbl.Size=UDim2.new(1,-20,1,0); lbl.Position=UDim2.new(0,20,0,0)
+		lbl.BackgroundTransparency=1; lbl.Text=fmt(cur+amount); lbl.TextColor3=Color3.fromRGB(59,255,56)
+		lbl.Font=Enum.Font.GothamSemibold; lbl.TextSize=14; lbl.TextXAlignment=Enum.TextXAlignment.Left; lbl.Parent=don
+	end)
+end
+
+local function showNotif(opts)
+	local sg=playerGui:FindFirstChild("_FazoxNotifGui")
+	if not sg then sg=Instance.new("ScreenGui"); sg.Name="_FazoxNotifGui"; sg.ResetOnSpawn=false; sg.DisplayOrder=12010; sg.Parent=playerGui end
+	local wrap=Instance.new("Frame",sg); wrap.AnchorPoint=Vector2.new(0.5,1); wrap.Position=UDim2.new(0.5,0,1.15,0)
+	wrap.Size=UDim2.fromOffset(0,52); wrap.AutomaticSize=Enum.AutomaticSize.X; wrap.BackgroundTransparency=1; wrap.BorderSizePixel=0
+	local pill=Instance.new("Frame",wrap); pill.AnchorPoint=Vector2.new(0.5,0.5); pill.Position=UDim2.new(0.5,0,0.5,0)
+	pill.Size=UDim2.fromOffset(0,52); pill.AutomaticSize=Enum.AutomaticSize.X; pill.BackgroundColor3=opts.Color or Color3.fromRGB(30,30,40); pill.BorderSizePixel=0
+	Instance.new("UICorner",pill).CornerRadius=UDim.new(1,0)
+	local stroke=Instance.new("UIStroke",pill); stroke.Color=Color3.new(1,1,1); stroke.Transparency=0.75; stroke.Thickness=2
+	local pad=Instance.new("UIPadding",pill); pad.PaddingLeft=UDim.new(0,22); pad.PaddingRight=UDim.new(0,22); pad.PaddingTop=UDim.new(0,10); pad.PaddingBottom=UDim.new(0,10)
+	local lay=Instance.new("UIListLayout",pill); lay.FillDirection=Enum.FillDirection.Horizontal; lay.VerticalAlignment=Enum.VerticalAlignment.Center; lay.Padding=UDim.new(0,8); lay.SortOrder=Enum.SortOrder.LayoutOrder
+	if opts.Icon then local ico=Instance.new("ImageLabel",pill); ico.Image=opts.Icon; ico.ImageColor3=Color3.new(1,1,1); ico.Size=UDim2.fromOffset(22,22); ico.BackgroundTransparency=1; ico.LayoutOrder=1 end
+	local lbl=Instance.new("TextLabel",pill); lbl.Text=opts.Text or ""; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=20; lbl.TextColor3=Color3.new(1,1,1); lbl.BackgroundTransparency=1; lbl.AutomaticSize=Enum.AutomaticSize.XY; lbl.LayoutOrder=2
+	pill.BackgroundTransparency=1; lbl.TextTransparency=1
+	TweenService:Create(pill,TweenInfo.new(0.2),{BackgroundTransparency=0}):Play()
+	TweenService:Create(lbl,TweenInfo.new(0.2),{TextTransparency=0}):Play()
+	TweenService:Create(wrap,TweenInfo.new(0.5,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Position=UDim2.new(0.5,0,0.88,0)}):Play()
+	task.delay(opts.Duration or 3,function()
+		if not (wrap and wrap.Parent) then return end
+		TweenService:Create(pill,TweenInfo.new(0.3),{BackgroundTransparency=1}):Play()
+		TweenService:Create(lbl,TweenInfo.new(0.3),{TextTransparency=1}):Play()
+		local tout=TweenService:Create(wrap,TweenInfo.new(0.4,Enum.EasingStyle.Back,Enum.EasingDirection.In),{Position=UDim2.new(0.5,0,1.15,0)})
+		tout:Play(); tout.Completed:Connect(function() pcall(function() wrap:Destroy() end) end)
+	end)
+end
+
+local function showGreenDonation(amount,recipientName)
+	playDonSnd(amount)
+	local sg=playerGui:FindFirstChild("_GreenDonGui")
+	if not sg then sg=Instance.new("ScreenGui"); sg.Name="_GreenDonGui"; sg.ResetOnSpawn=false; sg.DisplayOrder=12003; sg.Parent=playerGui end
+	local wrap=Instance.new("Frame",sg); wrap.AnchorPoint=Vector2.new(0.5,1); wrap.Position=UDim2.new(0.5,0,1.15,0)
+	wrap.Size=UDim2.fromOffset(0,64); wrap.AutomaticSize=Enum.AutomaticSize.X; wrap.BackgroundTransparency=1
+	local pill=Instance.new("Frame",wrap); pill.AnchorPoint=Vector2.new(0.5,0.5); pill.Position=UDim2.new(0.5,0,0.5,0)
+	pill.Size=UDim2.fromOffset(0,64); pill.AutomaticSize=Enum.AutomaticSize.X; pill.BackgroundColor3=Color3.fromRGB(0,140,60); pill.BorderSizePixel=0
+	Instance.new("UICorner",pill).CornerRadius=UDim.new(1,0)
+	local pad=Instance.new("UIPadding",pill); pad.PaddingLeft=UDim.new(0,28); pad.PaddingRight=UDim.new(0,28); pad.PaddingTop=UDim.new(0,12); pad.PaddingBottom=UDim.new(0,12)
+	local lay=Instance.new("UIListLayout",pill); lay.FillDirection=Enum.FillDirection.Horizontal; lay.VerticalAlignment=Enum.VerticalAlignment.Center; lay.Padding=UDim.new(0,10)
+	local ico=Instance.new("ImageLabel",pill); ico.Image=ROBUX_ICON; ico.Size=UDim2.fromOffset(28,28); ico.BackgroundTransparency=1; ico.ImageColor3=Color3.fromRGB(180,255,180); ico.LayoutOrder=1
+	local txt=Instance.new("TextLabel",pill); txt.Text="you donated "..fmt(amount).." to "..tostring(recipientName).."!"; txt.Font=Enum.Font.GothamBlack; txt.TextSize=22; txt.TextColor3=Color3.new(1,1,1); txt.BackgroundTransparency=1; txt.AutomaticSize=Enum.AutomaticSize.XY; txt.LayoutOrder=2
+	pill.BackgroundTransparency=1; txt.TextTransparency=1
+	TweenService:Create(pill,TweenInfo.new(0.2),{BackgroundTransparency=0}):Play()
+	TweenService:Create(txt,TweenInfo.new(0.2),{TextTransparency=0}):Play()
+	TweenService:Create(wrap,TweenInfo.new(0.5,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Position=UDim2.new(0.5,0,0.82,0)}):Play()
+	task.delay(4,function()
+		if not (wrap and wrap.Parent) then return end
+		TweenService:Create(pill,TweenInfo.new(0.3),{BackgroundTransparency=1}):Play(); TweenService:Create(txt,TweenInfo.new(0.3),{TextTransparency=1}):Play()
+		local t=TweenService:Create(wrap,TweenInfo.new(0.4,Enum.EasingStyle.Back,Enum.EasingDirection.In),{Position=UDim2.new(0.5,0,1.15,0)}); t:Play(); t.Completed:Connect(function() pcall(function() wrap:Destroy() end) end)
+	end)
+end
+
+local function showSentGiftNotification()
+	local sg=playerGui:FindFirstChild("_SentGiftGui")
+	if not sg then sg=Instance.new("ScreenGui"); sg.Name="_SentGiftGui"; sg.ResetOnSpawn=false; sg.DisplayOrder=12005; sg.Parent=playerGui end
+	local wrap=Instance.new("Frame",sg); wrap.AnchorPoint=Vector2.new(0.5,1); wrap.Position=UDim2.new(0.5,0,1.2,0); wrap.Size=UDim2.fromOffset(0,62); wrap.AutomaticSize=Enum.AutomaticSize.X; wrap.BackgroundTransparency=1
+	local container=Instance.new("Frame",wrap); container.AnchorPoint=Vector2.new(0.5,0.5); container.Position=UDim2.new(0.5,0,0.5,0); container.Size=UDim2.fromOffset(0,62); container.AutomaticSize=Enum.AutomaticSize.X; container.BackgroundColor3=Color3.fromRGB(255,20,110); container.BorderSizePixel=0
+	Instance.new("UICorner",container).CornerRadius=UDim.new(1,0)
+	local cStroke=Instance.new("UIStroke",container); cStroke.Color=Color3.new(1,1,1); cStroke.Transparency=0.3; cStroke.Thickness=3
+	local padding=Instance.new("UIPadding",container); padding.PaddingLeft=UDim.new(0,28); padding.PaddingRight=UDim.new(0,28); padding.PaddingTop=UDim.new(0,12); padding.PaddingBottom=UDim.new(0,12)
+	local layout=Instance.new("UIListLayout",container); layout.FillDirection=Enum.FillDirection.Horizontal; layout.VerticalAlignment=Enum.VerticalAlignment.Center; layout.HorizontalAlignment=Enum.HorizontalAlignment.Center; layout.Padding=UDim.new(0,8)
+	local icon=Instance.new("ImageLabel",container); icon.Image="rbxassetid://15047358527"; icon.ImageColor3=Color3.new(1,1,1); icon.Size=UDim2.fromOffset(28,28); icon.BackgroundTransparency=1; icon.ImageTransparency=1; icon.LayoutOrder=1
+	local sentWord=Instance.new("TextLabel",container); sentWord.Text="sent"; sentWord.Font=Enum.Font.GothamBlack; sentWord.TextSize=24; sentWord.TextColor3=Color3.new(1,1,1); sentWord.BackgroundTransparency=1; sentWord.TextTransparency=1; sentWord.AutomaticSize=Enum.AutomaticSize.XY; sentWord.LayoutOrder=2
+	local giftWord=Instance.new("TextLabel",container); giftWord.Text="gift!"; giftWord.Font=Enum.Font.GothamBlack; giftWord.TextSize=24; giftWord.TextColor3=Color3.fromRGB(255,230,60); giftWord.BackgroundTransparency=1; giftWord.TextTransparency=1; giftWord.AutomaticSize=Enum.AutomaticSize.XY; giftWord.LayoutOrder=3
+	container.BackgroundTransparency=1; cStroke.Transparency=1
+	playS(SOUNDS.Success,1.4)
+	TweenService:Create(wrap,TweenInfo.new(0.55,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Position=UDim2.new(0.5,0,0.88,0)}):Play()
+	TweenService:Create(container,TweenInfo.new(0.18),{BackgroundTransparency=0}):Play()
+	TweenService:Create(cStroke,TweenInfo.new(0.18),{Transparency=0.3}):Play()
+	TweenService:Create(icon,TweenInfo.new(0.22,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{ImageTransparency=0}):Play()
+	TweenService:Create(sentWord,TweenInfo.new(0.25,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{TextTransparency=0}):Play()
+	task.delay(0.32,function()
+		if not (giftWord and giftWord.Parent) then return end
+		playS(SOUNDS.Coins,1.6)
+		TweenService:Create(giftWord,TweenInfo.new(0.18,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{TextTransparency=0,TextSize=32}):Play()
+		task.delay(0.18,function()
+			if not (giftWord and giftWord.Parent) then return end
+			TweenService:Create(giftWord,TweenInfo.new(0.14,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{TextSize=24,TextColor3=Color3.new(1,1,1)}):Play()
+		end)
+	end)
+	task.delay(3.5,function()
+		if not (wrap and wrap.Parent) then return end
+		local fo=TweenInfo.new(0.35,Enum.EasingStyle.Quad,Enum.EasingDirection.In)
+		TweenService:Create(container,fo,{BackgroundTransparency=1}):Play(); TweenService:Create(cStroke,fo,{Transparency=1}):Play()
+		TweenService:Create(icon,fo,{ImageTransparency=1}):Play()
+		TweenService:Create(sentWord,fo,{TextTransparency=1}):Play()
+		TweenService:Create(giftWord,fo,{TextTransparency=1}):Play()
+		local t=TweenService:Create(wrap,TweenInfo.new(0.45,Enum.EasingStyle.Back,Enum.EasingDirection.In),{Position=UDim2.new(0.5,0,1.2,0)}); t:Play(); t.Completed:Connect(function() pcall(function() wrap:Destroy() end) end)
+	end)
+end
+
+local addLiveDonationEntry
+local function fireNotifs(recipientName,amount,style)
+	style=style or CFG.notifStyle
+	local online=false
+	for _,p in ipairs(Players:GetPlayers()) do if p.Name:lower()==(recipientName or ""):lower() then online=true;break end end
+	if style=="none" then return end
+	if style=="pink" then task.delay(0.3,function() showSentGiftNotification() end)
+	elseif style=="green" then showGreenDonation(amount,recipientName)
+	else if online then showGreenDonation(amount,recipientName) else task.delay(0.3,function() showSentGiftNotification() end) end end
+	addLiveDonationEntry(CFG.customName and #CFG.customName>0 and CFG.customName or player.Name, recipientName, amount)
+end
+
+local activeBBs={}
+local function removeBBs() for _,bb in ipairs(activeBBs) do pcall(function() if bb and bb.Parent then bb:Destroy() end end) end; activeBBs={} end
+local function mkPill(parent, text, color, order)
+	local frame = Instance.new("Frame")
+	frame.AutomaticSize = Enum.AutomaticSize.X
+	frame.Size = UDim2.new(0, 0, 0, 20)
+	frame.BackgroundColor3 = color
+	frame.BackgroundTransparency = 0.02
+	frame.BorderSizePixel = 0
+	frame.ZIndex = 5
+	frame.LayoutOrder = order
+	frame.Parent = parent
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(1, 0)
+	local pad = Instance.new("UIPadding", frame)
+	pad.PaddingLeft = UDim.new(0, 9)
+	pad.PaddingRight = UDim.new(0, 9)
+	local lbl = Instance.new("TextLabel")
+	lbl.AutomaticSize = Enum.AutomaticSize.X
+	lbl.Size = UDim2.new(0, 0, 1, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = text
+	lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+	lbl.TextSize = 11
+	lbl.Font = Enum.Font.GothamBold
+	lbl.TextXAlignment = Enum.TextXAlignment.Center
+	lbl.ZIndex = 6
+	lbl.Parent = frame
+	return frame
+end
+local function applyBadges(char)
+	removeBBs(); local head=char:FindFirstChild("Head"); if not head then return end
+	local hum=char:FindFirstChild("Humanoid"); if hum then hum.DisplayDistanceType=Enum.HumanoidDisplayDistanceType.None end
+	local bb=Instance.new("BillboardGui"); bb.Name="FazoxBadgeBB"; bb.Adornee=head; bb.Size=UDim2.fromOffset(260,70); bb.StudsOffsetWorldSpace=Vector3.new(0,3,0); bb.AlwaysOnTop=true; bb.LightInfluence=0; bb.Parent=head; table.insert(activeBBs,bb)
+	local bRow=Instance.new("Frame",bb); bRow.AutomaticSize=Enum.AutomaticSize.X; bRow.Size=UDim2.new(0,0,0,20); bRow.Position=UDim2.new(0.5,0,0,8); bRow.AnchorPoint=Vector2.new(0.5,0); bRow.BackgroundTransparency=1
+	local bList=Instance.new("UIListLayout",bRow); bList.FillDirection=Enum.FillDirection.Horizontal; bList.HorizontalAlignment=Enum.HorizontalAlignment.Center; bList.VerticalAlignment=Enum.VerticalAlignment.Center; bList.Padding=UDim.new(0,4)
+	if CFG.customBadge and CFG.customBadgeText and #CFG.customBadgeText>0 then mkPill(bRow,CFG.customBadgeText,CFG.customBadgeColor or Color3.fromRGB(100,100,255),3) end
+	if CFG.developerBadge then mkPill(bRow,CFG.badgeText or "Developer",CFG.badgeColor or Color3.fromRGB(255,70,71),1) end
+	if CFG.vipBadge then mkPill(bRow,"VIP",Color3.fromRGB(254,168,8),2) end
+	local nRow=Instance.new("Frame",bb); nRow.AutomaticSize=Enum.AutomaticSize.XY; nRow.Size=UDim2.new(0,0,0,18); nRow.Position=UDim2.new(0.5,0,0,33); nRow.AnchorPoint=Vector2.new(0.5,0); nRow.BackgroundTransparency=1
+	local nList=Instance.new("UIListLayout",nRow); nList.FillDirection=Enum.FillDirection.Horizontal; nList.VerticalAlignment=Enum.VerticalAlignment.Center; nList.HorizontalAlignment=Enum.HorizontalAlignment.Center; nList.Padding=UDim.new(0,3)
+	if CFG.nameEnabled and CFG.customName and #CFG.customName>0 then
+		if CFG.showCheckmark then local ckBox=Instance.new("Frame",nRow); ckBox.Size=UDim2.fromOffset(16,16); ckBox.BackgroundColor3=Color3.fromRGB(30,100,255); ckBox.BorderSizePixel=0; ckBox.LayoutOrder=1; Instance.new("UICorner",ckBox).CornerRadius=UDim.new(0,4); local ckl=Instance.new("TextLabel",ckBox); ckl.Size=UDim2.new(1,0,1,0); ckl.BackgroundTransparency=1; ckl.Text="✓"; ckl.TextColor3=Color3.fromRGB(255,255,255); ckl.TextSize=11; ckl.Font=Enum.Font.GothamBold; ckl.TextXAlignment=Enum.TextXAlignment.Center; ckl.TextYAlignment=Enum.TextYAlignment.Center end
+		local nl=Instance.new("TextLabel",nRow); nl.AutomaticSize=Enum.AutomaticSize.XY; nl.Size=UDim2.new(0,0,0,0); nl.BackgroundTransparency=1; nl.Text=CFG.customName; nl.TextColor3=CFG.nameColor; nl.TextSize=13; nl.Font=Enum.Font.GothamBold; nl.LayoutOrder=2
+	end
+end
+player.CharacterAdded:Connect(applyBadges)
+if player.Character then applyBadges(player.Character) end
+
+local _overlayGui=nil
+local function setHide(v)
+	local char=player.Character; if not char then return end
+	pcall(function() for _,p in pairs(char:GetDescendants()) do if p:IsA("BasePart") or p:IsA("Decal") then p.LocalTransparencyModifier=v and 1 or 0 end end end)
+end
+local function destroyOverlay() if _overlayGui then pcall(function() _overlayGui:Destroy() end); _overlayGui=nil end end
+local function spawnOverlay(userId,username)
+	destroyOverlay()
+	local ok,err=pcall(function()
+		_overlayGui=Instance.new("ScreenGui"); _overlayGui.Name="FazoxAvatarOverlay"; _overlayGui.ResetOnSpawn=false; _overlayGui.DisplayOrder=5000; _overlayGui.Parent=playerGui
+	end)
+	if not ok then return false,"GUI error: "..tostring(err) end
+	return true
+end
+
+local function spawnCoinRain(recipientName)
+	task.spawn(function()
+		pcall(function()
+			local targetHRP=nil
+			for _,p in ipairs(Players:GetPlayers()) do
+				if p.Name:lower()==(recipientName or ""):lower() and p.Character then
+					targetHRP=p.Character:FindFirstChild("HumanoidRootPart"); break
+				end
+			end
+			local myHRP=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			local spawnPos=myHRP and myHRP.Position+Vector3.new(0,5,0) or Vector3.new(0,10,0)
+			local FLIGHT_DUR=1.4
+			local COIN_COUNT=12
+			local FULL_SIZE=Vector3.new(1.4,0.2,1.4)
+			for ci=1,COIN_COUNT do
+				task.delay(ci*0.07,function()
+					pcall(function()
+						local coin=Instance.new("Part"); coin.Shape=Enum.PartType.Cylinder; coin.Size=Vector3.new(0.01,0.01,0.01); coin.BrickColor=BrickColor.new("Bright yellow"); coin.Material=Enum.Material.SmoothPlastic; coin.CastShadow=false; coin.Anchored=false; coin.CanCollide=false; coin.Transparency=0
+						coin.CFrame=CFrame.new(spawnPos+Vector3.new(math.random(-2,2),0,math.random(-2,2))); coin.Parent=workspace; Debris:AddItem(coin,8)
+						local lt=Instance.new("PointLight",coin); lt.Color=Color3.fromRGB(255,210,40); lt.Brightness=7; lt.Range=20
+						local att0=Instance.new("Attachment",coin); local att1=Instance.new("Attachment",coin); att1.Position=Vector3.new(0,0,-2)
+						local trail=Instance.new("Trail",coin); trail.Attachment0=att0; trail.Attachment1=att1; trail.Lifetime=0.22; trail.MinLength=0; trail.LightEmission=1
+						trail.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(255,230,60)),ColorSequenceKeypoint.new(1,Color3.fromRGB(255,80,0))}); trail.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.1),NumberSequenceKeypoint.new(1,1)}); trail.Enabled=false
+						local bb=Instance.new("BillboardGui",coin); bb.Size=UDim2.fromOffset(54,54); bb.StudsOffset=Vector3.new(0,2,0); bb.AlwaysOnTop=false
+						local ico=Instance.new("ImageLabel",bb); ico.Size=UDim2.fromScale(1,1); ico.BackgroundTransparency=1; ico.Image=ROBUX_ICON; ico.ImageColor3=Color3.fromRGB(255,215,30); ico.ImageTransparency=1
+						TweenService:Create(coin,TweenInfo.new(0.14,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Size=FULL_SIZE}):Play(); TweenService:Create(ico,TweenInfo.new(0.12),{ImageTransparency=0}):Play()
+						task.wait(0.10); trail.Enabled=true
+						local elapsed=0; local spinAng=0; local coinDone=false; local flyConn
+						local function impactCoin() if coinDone then return end; coinDone=true; flyConn:Disconnect(); trail.Enabled=false; TweenService:Create(coin,TweenInfo.new(0.15,Enum.EasingStyle.Quad,Enum.EasingDirection.In),{Size=Vector3.new(0.01,0.01,0.01),Transparency=1}):Play(); TweenService:Create(lt,TweenInfo.new(0.12),{Brightness=0}):Play(); TweenService:Create(ico,TweenInfo.new(0.10),{ImageTransparency=1}):Play(); task.delay(0.25,function() pcall(function() coin:Destroy() end) end) end
+						flyConn=RunService.Heartbeat:Connect(function(dt) if not (coin and coin.Parent) then flyConn:Disconnect(); return end; elapsed=elapsed+dt; local t=math.min(elapsed/FLIGHT_DUR,1); local eased=t==1 and 1 or 1-math.pow(2,-10*t); spinAng=spinAng+dt*620; local curTarget=targetHRP and targetHRP.Position or spawnPos; local flat=spawnPos:Lerp(curTarget,eased); local arcH=4*t*(1-t)*8; local newPos=flat+Vector3.new(0,arcH,0); local dir=(curTarget-newPos); local targetCF=CFrame.new(newPos,newPos+(dir.Magnitude>0.01 and dir.Unit or Vector3.new(0,0,1)))*CFrame.Angles(0,math.rad(spinAng),0)*CFrame.Angles(0,0,math.rad(90)); pcall(function() coin.CFrame=targetCF end); coin.Size=FULL_SIZE*(1-eased*0.15); if (newPos-curTarget).Magnitude<3.2 or t>=1 then impactCoin() end end)
+					end)
+				end)
+			end
+		end)
+	end)
+end
+
+local function resolveBBText(template,playerName,recipName)
+	local s=template or ""
+	local actualPlayer = (CFG.bbUseCustomName and CFG.bbCustomName and #CFG.bbCustomName>0) and CFG.bbCustomName or playerName
+	s=s:gsub("{player}", actualPlayer or "?")
+	s=s:gsub("{user}", recipName or "?")
+	return s
+end
+
+local function showNukeBillboard(amount,recipientName,buyerName)
+	task.spawn(function()
+		local landPos=NUKE_LAND_POS
+		local startY=landPos.Y+18
+		local endY=landPos.Y+110
+		local carrier=Instance.new("Part"); carrier.Size=Vector3.new(0.1,0.1,0.1); carrier.Transparency=1; carrier.Anchored=true; carrier.CanCollide=false; carrier.CFrame=CFrame.new(landPos.X,startY,landPos.Z); carrier.Parent=workspace; Debris:AddItem(carrier,10)
+		local donBB=Instance.new("BillboardGui",carrier); donBB.Size=UDim2.fromOffset(500,260); donBB.AlwaysOnTop=true; donBB.MaxDistance=900; donBB.LightInfluence=0
+		local card=Instance.new("Frame",donBB); card.Size=UDim2.fromScale(1,1); card.BackgroundTransparency=1; card.AnchorPoint=Vector2.new(0.5,0.5); card.Position=UDim2.fromScale(0.5,0.5)
+		local logoImg=Instance.new("ImageLabel",card); logoImg.Size=UDim2.fromOffset(200,200); logoImg.AnchorPoint=Vector2.new(0.5,0.5); logoImg.Position=UDim2.fromScale(0.5,0.5); logoImg.BackgroundTransparency=1; logoImg.Image=ROBUX_THUMB; logoImg.ImageColor3=Color3.fromRGB(200,200,200); logoImg.ImageTransparency=0.15; logoImg.ZIndex=1
+		local line1=Instance.new("TextLabel",card); line1.Size=UDim2.new(1,0,0,38); line1.Position=UDim2.new(0,0,0,10); line1.BackgroundTransparency=1; line1.Text="@"..string.upper(resolveBBText(CFG.bbLine1,buyerName or player.Name,recipientName)); line1.Font=Enum.Font.GothamBlack; line1.TextSize=28; line1.TextColor3=Color3.fromRGB(255,255,255); line1.TextStrokeTransparency=0; line1.TextStrokeColor3=Color3.fromRGB(200,80,0); line1.TextXAlignment=Enum.TextXAlignment.Center; line1.ZIndex=5
+		local line2=Instance.new("TextLabel",card); line2.Size=UDim2.new(1,0,0,120); line2.Position=UDim2.new(0,0,0,50); line2.BackgroundTransparency=1; line2.Text=fmt(amount); line2.Font=Enum.Font.GothamBlack; line2.TextSize=88; line2.TextColor3=Color3.fromRGB(255,213,0); line2.TextStrokeTransparency=0; line2.TextStrokeColor3=Color3.fromRGB(120,50,0); line2.TextXAlignment=Enum.TextXAlignment.Center; line2.ZIndex=5
+		local line3=Instance.new("TextLabel",card); line3.Size=UDim2.new(1,0,0,34); line3.Position=UDim2.new(0,0,0,178); line3.BackgroundTransparency=1; line3.Text="TO @"..string.upper(resolveBBText(CFG.bbLine3,buyerName or player.Name,recipientName)); line3.Font=Enum.Font.GothamBlack; line3.TextSize=26; line3.TextColor3=Color3.fromRGB(255,255,255); line3.TextStrokeTransparency=0; line3.TextStrokeColor3=Color3.fromRGB(200,80,0); line3.TextXAlignment=Enum.TextXAlignment.Center; line3.ZIndex=5
+		local riseConn; local riseElapsed=0; local RISE_TOTAL=10
+		riseConn=RunService.Heartbeat:Connect(function(dt)
+			if not (carrier and carrier.Parent) then riseConn:Disconnect(); return end
+			riseElapsed=riseElapsed+dt
+			local t=math.min(riseElapsed/RISE_TOTAL,1)
+			local eased=1-math.pow(1-t,2)
+			carrier.CFrame=CFrame.new(landPos.X,startY+(endY-startY)*eased,landPos.Z)
+			if t>=1 then riseConn:Disconnect() end
+		end)
+		task.delay(10,function() if donBB and donBB.Parent then TweenService:Create(donBB,TweenInfo.new(2.5,Enum.EasingStyle.Quad,Enum.EasingDirection.In),{StudsOffsetWorldSpace=Vector3.new(0,0,0)}):Play() end end)
+	end)
+end
+
+local _donRunning  = false
+local _lastDonTick = -999
+
+addLiveDonationEntry = function(donorDisplayName, recipientRealName, amount)
+	if _donRunning then return end
+	local now = tick()
+	if now - _lastDonTick < 10 then return end
+	_donRunning  = true
+	_lastDonTick = now
+
+	task.spawn(function() pcall(function()
+			local mapUICont = playerGui:WaitForChild("MapUIContainer", 5)
+			if not mapUICont then _donRunning = false; return end
+			local mapUI = mapUICont:WaitForChild("MapUI", 5)
+			if not mapUI then _donRunning = false; return end
+			local liveDon = mapUI:WaitForChild("LiveDonations", 5)
+			if not liveDon then _donRunning = false; return end
+
+			local scroll = liveDon
+			for _, v in ipairs(liveDon:GetChildren()) do
+				if v:IsA("ScrollingFrame") or
+					(v:IsA("Frame") and v.Name ~= "UIListLayout" and v.Name ~= "UIPadding") then
+					scroll = v; break
+				end
+			end
+
+			-- ── Color tier ──
+			local tierColor
+			if amount >= 10000000 then
+				tierColor = Color3.fromRGB(255, 0, 220)
+			elseif amount >= 1000000 then
+				tierColor = Color3.fromRGB(255, 0, 220)
+			elseif amount >= 100000 then
+				tierColor = Color3.fromRGB(255, 0, 220)
+			elseif amount >= 10000 then
+				tierColor = Color3.fromRGB(0, 230, 255)
+			elseif amount >= 1000 then
+				tierColor = Color3.fromRGB(255, 200, 0)
+			else
+				tierColor = Color3.fromRGB(41, 255, 5)
+			end
+
+			-- ── Fetch thumbnails ──
+			local donThumb = ""
+			local recThumb = ""
+			local isOnline = false
+
+			pcall(function()
+				if CFG.bbCustomProfileId and CFG.bbCustomProfileId > 0 then
+					donThumb = Players:GetUserThumbnailAsync(
+						CFG.bbCustomProfileId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+				else
+					donThumb = Players:GetUserThumbnailAsync(
+						player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+				end
+			end)
+
+			pcall(function()
+				local rp = Players:FindFirstChild(recipientRealName or "")
+				if rp then
+					isOnline = true
+					recThumb = Players:GetUserThumbnailAsync(
+						rp.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+				else
+					local ok, uid = pcall(function()
+						return Players:GetUserIdFromNameAsync(recipientRealName or "")
+					end)
+					if ok and uid then
+						recThumb = Players:GetUserThumbnailAsync(
+							uid, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+					end
+				end
+			end)
+
+			local CARD_H   = 115
+			local AVA      = 82
+			local INSET_X  = 28
+			local DURATION = amount < 10000 and 30 or 90
+
+			-- ── Fully transparent card container ──
+			local clone = Instance.new("Frame")
+			clone.Name                   = "BiryukovDonCard"
+			clone.LayoutOrder            = -math.floor(tick())
+			clone.Size                   = UDim2.new(1, -6, 0, CARD_H)
+			clone.BackgroundTransparency = 1
+			clone.BorderSizePixel        = 0
+			clone.ClipsDescendants       = false
+
+			-- ── Avatar helper ──
+			local function mkCircleAva(parent, img, anchorRight, insetX)
+				local border = Instance.new("Frame", parent)
+				border.Size             = UDim2.fromOffset(AVA + 12, AVA + 12)
+				border.BackgroundColor3 = tierColor
+				border.BorderSizePixel  = 0
+				border.ZIndex           = 6
+				if anchorRight then
+					border.AnchorPoint = Vector2.new(1, 0.5)
+					border.Position    = UDim2.new(1, -insetX, 0.38, 0)
+				else
+					border.AnchorPoint = Vector2.new(0, 0.5)
+					border.Position    = UDim2.new(0, insetX, 0.38, 0)
+				end
+				Instance.new("UICorner", border).CornerRadius = UDim.new(1, 0)
+
+				local innerRing = Instance.new("Frame", border)
+				innerRing.Size             = UDim2.fromOffset(AVA + 6, AVA + 6)
+				innerRing.AnchorPoint      = Vector2.new(0.5, 0.5)
+				innerRing.Position         = UDim2.fromScale(0.5, 0.5)
+				local h, s, v = Color3.toHSV(tierColor)
+				local innerColor = Color3.fromHSV(h, s * 0.28, 0.87)
+				innerRing.BackgroundColor3 = innerColor
+				innerRing.BorderSizePixel  = 0
+				innerRing.ZIndex           = 6
+				Instance.new("UICorner", innerRing).CornerRadius = UDim.new(1, 0)
+
+				local inner = Instance.new("Frame", innerRing)
+				inner.Size             = UDim2.fromOffset(AVA, AVA)
+				inner.AnchorPoint      = Vector2.new(0.5, 0.5)
+				inner.Position         = UDim2.fromScale(0.5, 0.5)
+				inner.BackgroundColor3 = innerColor
+				inner.BorderSizePixel  = 0
+				inner.ZIndex           = 7
+				Instance.new("UICorner", inner).CornerRadius = UDim.new(1, 0)
+
+				local img_lbl = Instance.new("ImageLabel", inner)
+				img_lbl.Size                   = UDim2.fromScale(1, 1)
+				img_lbl.BackgroundTransparency = 1
+				img_lbl.Image                  = img
+				img_lbl.ScaleType              = Enum.ScaleType.Crop
+				img_lbl.ZIndex                 = 8
+				Instance.new("UICorner", img_lbl).CornerRadius = UDim.new(1, 0)
+
+				return border
+			end
+
+			local leftBorder  = mkCircleAva(clone, donThumb, false, INSET_X)
+			local rightBorder = mkCircleAva(clone, recThumb, true,  INSET_X)
+
+			-- ── Donor name — slightly below (0.70) ──
+			local donorDisplayed = (CFG.bbUseCustomName and CFG.bbCustomName and #CFG.bbCustomName > 0)
+				and CFG.bbCustomName
+				or donorDisplayName
+
+			local donorNameLbl = Instance.new("TextLabel", clone)
+			donorNameLbl.Size                   = UDim2.fromOffset(AVA + 40, 36)
+			donorNameLbl.AnchorPoint            = Vector2.new(0.5, 0)
+			donorNameLbl.Position               = UDim2.new(
+				leftBorder.Position.X.Scale,
+				leftBorder.Position.X.Offset + (AVA + 8) / 2,
+				0.70, 0)
+			donorNameLbl.BackgroundTransparency = 1
+			donorNameLbl.Text                   = "@" .. donorDisplayed
+			donorNameLbl.Font                   = Enum.Font.GothamBlack
+			donorNameLbl.TextSize               = 20
+			donorNameLbl.TextColor3             = Color3.fromRGB(255, 255, 255)
+			donorNameLbl.TextStrokeTransparency = 1
+			donorNameLbl.TextStrokeColor3       = Color3.fromRGB(0, 0, 0)
+			donorNameLbl.TextXAlignment         = Enum.TextXAlignment.Center
+			donorNameLbl.TextTruncate           = Enum.TextTruncate.AtEnd
+			donorNameLbl.ZIndex                 = 5
+
+			local donorStroke = Instance.new("UIStroke", donorNameLbl)
+			donorStroke.Color        = Color3.fromRGB(0, 0, 0)
+			donorStroke.Thickness    = 2
+			donorStroke.Transparency = 0
+
+			-- ── Recipient name — slightly below (0.70) ──
+			local recipNameLbl = Instance.new("TextLabel", clone)
+			recipNameLbl.Size                   = UDim2.fromOffset(AVA + 40, 36)
+			recipNameLbl.AnchorPoint            = Vector2.new(0.5, 0)
+			recipNameLbl.Position               = UDim2.new(
+				rightBorder.Position.X.Scale,
+				rightBorder.Position.X.Offset - (AVA + 8) / 2,
+				0.70, 0)
+			recipNameLbl.BackgroundTransparency = 1
+			recipNameLbl.Text                   = "@" .. (recipientRealName or "?")
+			recipNameLbl.Font                   = Enum.Font.GothamBlack
+			recipNameLbl.TextSize               = 20
+			recipNameLbl.TextColor3             = Color3.fromRGB(255, 255, 255)
+			recipNameLbl.TextStrokeTransparency = 1
+			recipNameLbl.TextStrokeColor3       = Color3.fromRGB(0, 0, 0)
+			recipNameLbl.TextXAlignment         = Enum.TextXAlignment.Center
+			recipNameLbl.TextTruncate           = Enum.TextTruncate.AtEnd
+			recipNameLbl.ZIndex                 = 5
+
+			local recipStroke = Instance.new("UIStroke", recipNameLbl)
+			recipStroke.Color        = Color3.fromRGB(0, 0, 0)
+			recipStroke.Thickness    = 2.0
+			recipStroke.Transparency = 0
+
+			-- ── Center column ──
+			local centerCol = Instance.new("Frame", clone)
+			centerCol.Size                   = UDim2.new(0, 170, 1, 0)
+			centerCol.AnchorPoint            = Vector2.new(0.5, 0.5)
+			centerCol.Position               = amount >= 1000000 and UDim2.fromScale(0.48, 0.38) or UDim2.fromScale(0.5, 0.38)
+			centerCol.BackgroundTransparency = 1
+			centerCol.ZIndex                 = 4
+
+			-- Robux icon + amount — slightly below (0.42) ──
+			local amtRow = Instance.new("Frame", centerCol)
+			amtRow.Size                   = UDim2.new(1, 0, 0, 42)
+			amtRow.AnchorPoint            = Vector2.new(0.5, 0.5)
+			amtRow.Position               = UDim2.fromScale(0.5, 0.42)
+			amtRow.BackgroundTransparency = 1
+			amtRow.ZIndex                 = 5
+
+			local amtLay = Instance.new("UIListLayout", amtRow)
+			amtLay.FillDirection       = Enum.FillDirection.Horizontal
+			amtLay.VerticalAlignment   = Enum.VerticalAlignment.Center
+			amtLay.HorizontalAlignment = Enum.HorizontalAlignment.Center
+			amtLay.Padding             = UDim.new(0, 5)
+
+			local rIco = Instance.new("ImageLabel", amtRow)
+			rIco.Size                   = UDim2.fromOffset(30, 30)
+			rIco.BackgroundTransparency = 1
+			rIco.Image                  = ROBUX_ICON
+			rIco.ImageColor3            = tierColor
+			rIco.LayoutOrder            = 1
+			rIco.ZIndex                 = 6
+
+			local amtL = Instance.new("TextLabel", amtRow)
+			amtL.Size                   = UDim2.new(0, 0, 1, 0)
+			amtL.AutomaticSize          = Enum.AutomaticSize.X
+			amtL.BackgroundTransparency = 1
+			amtL.Text                   = fmt(amount)
+			amtL.Font                   = Enum.Font.GothamBlack
+			amtL.TextSize               = amount >= 1000000 and 24 or 32
+			amtL.TextColor3             = tierColor
+			amtL.TextStrokeTransparency = 1
+			amtL.TextStrokeColor3       = Color3.fromRGB(0, 0, 0)
+			amtL.LayoutOrder            = 2
+			amtL.ZIndex                 = 6
+
+			local amtStroke = Instance.new("UIStroke", amtL)
+			amtStroke.Color        = Color3.fromRGB(0, 0, 0)
+			amtStroke.Thickness    = 2
+			amtStroke.Transparency = 0
+
+			-- "donated to" — slightly above (0.44) ──
+			local donatedLbl = Instance.new("TextLabel", centerCol)
+			donatedLbl.Size                   = UDim2.new(1, 0, 0, 36)
+			donatedLbl.AnchorPoint            = Vector2.new(0.5, 0)
+			donatedLbl.Position               = UDim2.fromScale(0.5, 0.52)
+			donatedLbl.BackgroundTransparency = 1
+			donatedLbl.Text                   = "donated to"
+			donatedLbl.Font                   = Enum.Font.GothamBlack
+			donatedLbl.TextSize               = 20
+			donatedLbl.TextColor3             = Color3.fromRGB(255, 255, 255)
+			donatedLbl.TextStrokeTransparency = 1
+			donatedLbl.TextStrokeColor3       = Color3.fromRGB(0, 0, 0)
+			donatedLbl.TextXAlignment         = Enum.TextXAlignment.Center
+			donatedLbl.ZIndex                 = 5
+
+			local donatedStroke = Instance.new("UIStroke", donatedLbl)
+			donatedStroke.Color        = Color3.fromRGB(0, 0, 0)
+			donatedStroke.Thickness    = 2
+			donatedStroke.Transparency = 0
+
+			-- ── Progress bar — slightly thinner (5px) ──
+			local barBg = Instance.new("Frame", clone)
+			barBg.Size                   = UDim2.new(1, 0, 0, 5)
+			barBg.AnchorPoint            = Vector2.new(0, 1)
+			barBg.Position               = UDim2.new(0, 0, 1, 0)
+			barBg.BackgroundColor3       = Color3.fromRGB(200, 200, 200)
+			barBg.BackgroundTransparency = 0.6
+			barBg.BorderSizePixel        = 0
+			barBg.ZIndex                 = 9
+			Instance.new("UICorner", barBg).CornerRadius = UDim.new(1, 0)
+
+			local barFill = Instance.new("Frame", barBg)
+			barFill.Size             = UDim2.new(1, 0, 1, 0)
+			barFill.BackgroundColor3 = tierColor
+			barFill.BorderSizePixel  = 0
+			barFill.ZIndex           = 10
+			Instance.new("UICorner", barFill).CornerRadius = UDim.new(1, 0)
+
+			TweenService:Create(barFill,
+				TweenInfo.new(DURATION, Enum.EasingStyle.Linear),
+				{Size = UDim2.new(0, 0, 1, 0)}):Play()
+
+			-- ── Slide in ──
+			clone.Position = UDim2.new(-1.1, 0, 0, 0)
+			clone.Parent   = scroll
+
+			TweenService:Create(clone,
+				TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+				{Position = UDim2.new(0, 3, 0, 0)}):Play()
+
+			-- ── Fade out after DURATION seconds ──
+			task.delay(DURATION, function() pcall(function()
+					TweenService:Create(clone,
+						TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+						{BackgroundTransparency = 1}):Play()
+					task.wait(0.7); clone:Destroy()
+				end) end)
+
+			task.wait(1)
+			_donRunning = false
+		end) end)
+end
+
+local function findNukeTemplate()
+	local template=nil
+	pcall(function() local n=workspace.Map.NukeIsland.NukePlatform.Other.RobuxNuke; if n and (n:IsA("Model")or n:IsA("BasePart")) then template=n; return end; n=workspace.Map.NukeIsland.Nuke; if n and (n:IsA("Model")or n:IsA("BasePart")) then template=n end end)
+	if template then return template end
+	pcall(function() local function findByName(parent,depth) if depth>6 or template then return end; for _,c in ipairs(parent:GetChildren()) do if c.Name=="Nuke" and (c:IsA("Model")or c:IsA("BasePart")) then template=c; return end; findByName(c,depth+1) end end; findByName(workspace,0) end)
+	return template
+end
+local function playNukeSnd(id,vol,pitch,looped)
+	if not CFG.enableSounds then return {Stop=function()end,Destroy=function()end} end
+	local s=Instance.new("Sound"); s.SoundId=id or ""; s.Volume=vol or 1; s.PlaybackSpeed=pitch or 1; s.Looped=looped or false; s.RollOffMaxDistance=10000; s.Parent=workspace; s:Play(); trackSnd(s)
+	if not looped then s.Ended:Connect(function() pcall(function() s:Destroy() end) end); Debris:AddItem(s,18) end
+	return s
+end
+local function RescaleParticle(p,s) if not p then return end; pcall(function() p.Speed=NumberRange.new(p.Speed.Min*s,p.Speed.Max*s); p.Acceleration=p.Acceleration*s; local kps=p.Size.Keypoints; local nkps={}; for _,kp in ipairs(kps) do table.insert(nkps,NumberSequenceKeypoint.new(kp.Time,kp.Value*s,kp.Envelope*s)) end; p.Size=NumberSequence.new(nkps) end) end
+local function makeBloom(intensity,size,threshold) local b=Instance.new("BloomEffect"); b.Name="FazoxNukeBloom"; b.Enabled=true; b.Intensity=intensity; b.Size=size; b.Threshold=threshold or 0.25; b.Parent=Lighting; return b end
+local function screenShake(duration,amplitude) local cam=workspace.CurrentCamera; if not cam then return end; task.spawn(function() local elapsed=0; local conn; conn=RunService.RenderStepped:Connect(function(dt) elapsed=elapsed+dt; if elapsed>=duration then conn:Disconnect(); return end; local fade=1-(elapsed/duration); local ox=(math.random()-0.5)*amplitude*fade*2; local oy=(math.random()-0.5)*amplitude*fade*2; pcall(function() cam.CFrame=cam.CFrame*CFrame.new(ox,oy,0) end) end) end) end
+
+local _nukeActive=false; local _nukeOrigCFGlobal=nil; local _nukeCloneRef=nil; local _nukeSetCFRef=nil; local _nukeRestoreFunc=nil
+local function resetNukeNow() pcall(function() if _nukeRestoreFunc then _nukeRestoreFunc(); _nukeRestoreFunc=nil elseif _nukeCloneRef and _nukeOrigCFGlobal and _nukeSetCFRef then _nukeSetCFRef(_nukeOrigCFGlobal); _nukeActive=false end end) end
+
+local function triggerNuke(recipientName, amount)
+	if not CFG.nukeEnabled then return end
+	if _nukeActive then showNotif({Color=Color3.fromRGB(255,140,0),Text="Nuke already in progress!",Duration=2}); return end
+	_nukeActive=true
+	table.clear(_activeNukeSounds)
+
+	task.spawn(function()
+		local alarmSnd=playNukeSnd(SOUNDS.NukeAlarm,2.5,1,true)
+		task.delay(CFG.nukeAlarmDur+4,function() pcall(function() alarmSnd:Stop(); alarmSnd:Destroy() end) end)
+
+		local nukeTemplate=findNukeTemplate()
+		if not nukeTemplate then
+			showNotif({Color=Color3.fromRGB(255,60,60),Text="Nuke model not found!",Duration=5})
+			pcall(function() alarmSnd:Stop(); alarmSnd:Destroy() end); _nukeActive=false; return
+		end
+
+		local _origNukeCF=nil
+		pcall(function() if nukeTemplate:IsA("BasePart") then _origNukeCF=nukeTemplate.CFrame else _origNukeCF=nukeTemplate:GetPivot() end end)
+		if not _origNukeCF then _nukeActive=false; return end
+
+		local original=nukeTemplate; local clone=nil
+		pcall(function() clone=original:Clone() end)
+		if not clone then _nukeActive=false; return end
+
+		pcall(function()
+			for _,p in ipairs(clone:GetDescendants()) do
+				if p:IsA("Sound") then p.Volume = 0; p:Stop(); p.Looped = false end
+			end
+		end)
+
+		pcall(function()
+			for _,p in ipairs(original:GetDescendants()) do if p:IsA("BasePart") then p.LocalTransparencyModifier=1 end; if p:IsA("Sound") then p:SetAttribute("_origVol", p.Volume); p.Volume=0; p:Stop() end end
+			if original:IsA("BasePart") then original.LocalTransparencyModifier=1 end
+		end)
+
+		local function doRestoreNuke()
+			pcall(function() clone:Destroy() end)
+			pcall(function() for _,p in ipairs(original:GetDescendants()) do if p:IsA("BasePart") then p.LocalTransparencyModifier=0 end; if p:IsA("Sound") then p.Volume=p:GetAttribute("_origVol") or 1 end end; if original:IsA("BasePart") then original.LocalTransparencyModifier=0 end end)
+			_nukeActive=false
+		end
+
+		_nukeOrigCFGlobal=_origNukeCF; _nukeCloneRef=clone; _nukeRestoreFunc=doRestoreNuke
+
+		local function getBasePart() if clone:IsA("BasePart") then return clone end; return clone.PrimaryPart or clone:FindFirstChildWhichIsA("BasePart") end
+		local function setCF(cf) if clone:IsA("BasePart") then pcall(function() clone.CFrame=cf end) else pcall(function() clone:PivotTo(cf) end) end end
+		_nukeSetCFRef=setCF
+
+		local CenterEmitPoint=clone:FindFirstChild("CenterEmitPoint"); local ThrustEmitPoint=clone:FindFirstChild("ThrustEmitPoint")
+		local Frame=nil; pcall(function() Frame=clone.BillboardGuiAnimation.Frame end)
+		local Objects=clone:FindFirstChild("Objects"); local confettiBoxTemplate=nil
+		if Objects then pcall(function() local cb=Objects:FindFirstChild("ConfettiBox"); if cb then confettiBoxTemplate=cb:Clone() end end); pcall(function() Objects:Destroy() end) end
+
+		local landPos=NUKE_LAND_POS
+		local bp=getBasePart(); if not bp then clone:Destroy(); return end
+		for _,p in ipairs(clone:GetDescendants()) do if p:IsA("BasePart") then p.Anchored=true; p.CanCollide=false end end
+		if clone:IsA("BasePart") then clone.Anchored=true; clone.CanCollide=false end
+
+		local platformCF=_origNukeCF; local platformPos=platformCF.Position
+		setCF(platformCF); clone.Parent=workspace
+
+		local smokeFolder=Instance.new("Folder"); smokeFolder.Parent=workspace; Debris:AddItem(smokeFolder,35)
+		local function spawnGroundSmoke(pos,count)
+			for i=1,count do task.delay(i*0.05,function() pcall(function()
+						local p=Instance.new("Part"); p.Size=Vector3.new(0.5,0.5,0.5); p.Transparency=1; p.Anchored=true; p.CanCollide=false; p.CastShadow=false
+						p.CFrame=CFrame.new(pos+Vector3.new(math.random(-3,3),0,math.random(-3,3))); p.Parent=smokeFolder
+						local sm=Instance.new("Smoke",p); sm.Color=Color3.fromRGB(230,230,230); sm.Opacity=math.random(60,80)/100; sm.RiseVelocity=math.random(8,14); sm.Size=math.random(4,7)
+					end) end) end
+		end
+
+		alarmSnd:Stop()
+
+		playNukeSnd(SOUNDS.NukePreLaunch,2,0.8)
+		task.delay(0.5,function() playNukeSnd(SOUNDS.NukePreThrust,1.8,0.85) end)
+		task.delay(1.2,function() playNukeSnd(SOUNDS.NukePreThrust2,1.5,0.9) end)
+
+		local function spawnLaunchSmokeBurst(pos, count, radius, size, dur)
+			for i=1,count do task.delay(i*0.04, function() pcall(function()
+						local p=Instance.new("Part"); p.Shape=Enum.PartType.Ball
+						p.Size=Vector3.new(size,size,size); p.Transparency=0.18
+						p.Anchored=true; p.CanCollide=false; p.CastShadow=false
+						local angle=math.random()*math.pi*2; local r=math.random()*radius
+						p.CFrame=CFrame.new(pos+Vector3.new(math.cos(angle)*r, math.random(-2,4), math.sin(angle)*r))
+						p.BrickColor=BrickColor.new("Medium stone grey"); p.Material=Enum.Material.SmoothPlastic
+						p.Parent=smokeFolder
+						TweenService:Create(p,TweenInfo.new(dur,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Size=Vector3.new(size*5,size*5,size*5),Transparency=1}):Play()
+						task.delay(dur+0.5,function() pcall(function() p:Destroy() end) end)
+					end) end) end
+		end
+
+		spawnLaunchSmokeBurst(platformPos, 20, 6, 8, 2.8)
+		spawnGroundSmoke(platformPos-Vector3.new(0,5,0), 14)
+
+		local SHAKE_DUR=1.5; local shakeElapsed=0; local shakeConn
+		shakeConn=RunService.Heartbeat:Connect(function(dt)
+			if not (clone and clone.Parent) then shakeConn:Disconnect(); return end
+			shakeElapsed=shakeElapsed+dt
+			if shakeElapsed>=SHAKE_DUR then shakeConn:Disconnect(); return end
+			local intensity=0.15+(shakeElapsed/SHAKE_DUR)*0.45
+			local vx=(math.random()-0.5)*intensity*2
+			local vz=(math.random()-0.5)*intensity*2
+			local vy=math.sin(shakeElapsed*22)*0.1
+			pcall(function() setCF(CFrame.new(platformPos+Vector3.new(vx,vy,vz))) end)
+		end)
+		task.wait(SHAKE_DUR)
+		if shakeConn then shakeConn:Disconnect() end
+
+		local RISE_HEIGHT = 340
+		local RISE_DUR    = 4.0
+
+		local function launchTrailSmoke(startPos)
+			task.spawn(function()
+				local lastY=startPos.Y-8; local smokeConn
+				smokeConn=RunService.Heartbeat:Connect(function()
+					local currentPos=nil; pcall(function() if clone:IsA("BasePart") then currentPos=clone.Position else currentPos=clone:GetPivot().Position end end)
+					if not currentPos then return end
+					if currentPos.Y > lastY + 4 then
+						lastY=currentPos.Y
+						pcall(function()
+							local altitude=(currentPos.Y-startPos.Y)/RISE_HEIGHT
+							local puffSize=math.max(2.5, 9*(1-altitude*0.6))
+							local puff=Instance.new("Part"); puff.Shape=Enum.PartType.Ball
+							puff.Size=Vector3.new(puffSize,puffSize,puffSize); puff.Transparency=0.22
+							puff.Anchored=true; puff.CanCollide=false; puff.CastShadow=false
+							puff.BrickColor=BrickColor.new("Medium stone grey"); puff.Material=Enum.Material.SmoothPlastic
+							puff.CFrame=CFrame.new(currentPos+Vector3.new(math.random(-2,2),-3,math.random(-2,2))); puff.Parent=smokeFolder
+							local expandSize=puffSize*5
+							TweenService:Create(puff,TweenInfo.new(5,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Size=Vector3.new(expandSize,expandSize,expandSize),Transparency=1}):Play()
+							task.delay(5.5,function() pcall(function() puff:Destroy() end) end)
+						end)
+					end
+					if not (clone and clone.Parent) then smokeConn:Disconnect() end
+				end)
+			end)
+		end
+
+		spawnLaunchSmokeBurst(platformPos, 16, 3, 6, 1.6)
+		playNukeSnd(SOUNDS.NukeLaunch,4,1)
+		task.delay(0.3,function() playNukeSnd(SOUNDS.NukeThrust,2.5,1) end)
+		if ThrustEmitPoint then pcall(function() ThrustEmitPoint.SmokeLaunch:Emit(90); for _,v in pairs(ThrustEmitPoint:GetChildren()) do v.Enabled=true end; ThrustEmitPoint.SmokeRing.Enabled=false; ThrustEmitPoint.SmokeLaunch.Enabled=false; ThrustEmitPoint.BigShockwave.Enabled=false; ThrustEmitPoint.Flare:Emit(30); ThrustEmitPoint.SmokeRing:Emit(90) end) end
+		if CenterEmitPoint then pcall(function() CenterEmitPoint.Rays1.Enabled=true; CenterEmitPoint.Rays2.Enabled=true; CenterEmitPoint.Rays3.Enabled=true end) end
+		pcall(function() clone.Sparkles.Enabled=true end)
+		launchTrailSmoke(platformPos)
+
+		local bloom=makeBloom(1.2,24,0.2)
+		TweenService:Create(bloom,TweenInfo.new(0.35,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Intensity=2.8,Size=42}):Play()
+		task.delay(0.4,function() TweenService:Create(bloom,TweenInfo.new(2.8,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Intensity=-1,Size=8}):Play() end)
+
+		local riseElapsed=0; local riseConn
+		riseConn=RunService.Heartbeat:Connect(function(dt)
+			if not (clone and clone.Parent) then riseConn:Disconnect(); return end
+			riseElapsed=riseElapsed+dt
+			local rt=math.min(riseElapsed/RISE_DUR,1)
+			local ease
+			if rt < 0.12 then
+				ease=(rt/0.12)*(rt/0.12)*0.03
+			else
+				local rt2=(rt-0.12)/0.88
+				ease=0.03+0.97*(rt2==1 and 1 or (1-math.pow(2,-8*rt2)))
+			end
+			local riseY=ease*RISE_HEIGHT
+			local wobFade=math.max(0,1-rt*3)
+			local wobX=math.sin(riseElapsed*2.4)*0.4*wobFade
+			local wobZ=math.cos(riseElapsed*1.9)*0.4*wobFade
+			local horizX=platformPos.X+(landPos.X-platformPos.X)*ease+wobX
+			local horizZ=platformPos.Z+(landPos.Z-platformPos.Z)*ease+wobZ
+			local newPos=Vector3.new(horizX, platformPos.Y+riseY, horizZ)
+			pcall(function() setCF(CFrame.new(newPos)) end)
+			if rt>=1 then riseConn:Disconnect() end
+		end)
+		task.wait(RISE_DUR)
+		if riseConn then riseConn:Disconnect() end
+
+		local peakPos=Vector3.new(landPos.X, platformPos.Y+RISE_HEIGHT, landPos.Z)
+
+		for i=1,6 do task.delay(i*0.06,function() pcall(function()
+					local puff=Instance.new("Part"); puff.Shape=Enum.PartType.Ball; puff.Size=Vector3.new(12,12,12); puff.Transparency=0.2; puff.Anchored=true; puff.CanCollide=false; puff.CastShadow=false
+					local mushroomColor = i<=3 and BrickColor.new("Bright orange") or BrickColor.new("Medium stone grey")
+					puff.BrickColor=mushroomColor; puff.Material=Enum.Material.SmoothPlastic
+					local spread = (i-1)*8
+					puff.CFrame=CFrame.new(peakPos+Vector3.new(math.random(-spread,spread),0,math.random(-spread,spread))); puff.Parent=smokeFolder
+					TweenService:Create(puff,TweenInfo.new(4.0,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Size=Vector3.new(80+i*10,60+i*8,80+i*10),Transparency=1}):Play()
+					task.delay(4.5,function() pcall(function() puff:Destroy() end) end)
+				end) end) end
+
+		task.wait(0.25)
+		playNukeSnd(SOUNDS.NukeFall,2.5,1)
+
+		local TILT_DUR=0.8; local tiltElapsed=0; local tiltConn
+		local startTiltCF=CFrame.new(peakPos)
+		local endTiltCF=CFrame.new(peakPos,landPos)*CFrame.Angles(-math.pi/2,0,0)
+		tiltConn=RunService.Heartbeat:Connect(function(dt)
+			if not (clone and clone.Parent) then tiltConn:Disconnect(); return end
+			tiltElapsed=tiltElapsed+dt
+			local t=math.min(tiltElapsed/TILT_DUR,1)
+			local eased=math.sin(t*math.pi/2)
+			pcall(function() setCF(startTiltCF:Lerp(endTiltCF,eased)) end)
+			if t>=1 then tiltConn:Disconnect() end
+		end)
+		task.wait(TILT_DUR)
+		if tiltConn then tiltConn:Disconnect() end
+
+		local DIVE_DUR  = 1.75
+		local DIVE_SPIN = 580
+		local diveStart=tick(); local diveStartPos=peakPos; local diveDone=false; local diveConn
+
+		task.spawn(function()
+			while not diveDone do
+				task.wait(0.05)
+				local curPos=nil; pcall(function() if clone:IsA("BasePart") then curPos=clone.Position else curPos=clone:GetPivot().Position end end)
+				if curPos then pcall(function()
+						local puff=Instance.new("Part"); puff.Shape=Enum.PartType.Ball; puff.Size=Vector3.new(4,4,4); puff.Transparency=0.28; puff.Anchored=true; puff.CanCollide=false; puff.CastShadow=false
+						puff.BrickColor=BrickColor.new("Medium stone grey"); puff.Material=Enum.Material.SmoothPlastic
+						puff.CFrame=CFrame.new(curPos+Vector3.new(math.random(-1,1),1,math.random(-1,1))); puff.Parent=smokeFolder
+						TweenService:Create(puff,TweenInfo.new(2,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Size=Vector3.new(16,16,16),Transparency=1}):Play()
+						task.delay(2.5,function() pcall(function() puff:Destroy() end) end)
+					end) end
+			end
+		end)
+
+		diveConn=RunService.Heartbeat:Connect(function()
+			if not (clone and clone.Parent) then diveConn:Disconnect(); return end
+			local elapsed=tick()-diveStart; local progress=math.min(elapsed/DIVE_DUR,1)
+			local eased=progress*progress*(3-2*progress)
+			eased=math.max(0,math.min(1,eased))
+			local pos=diveStartPos:Lerp(landPos,eased); local spinAngle=math.rad(DIVE_SPIN*elapsed)
+			pcall(function() setCF(CFrame.new(pos,landPos)*CFrame.Angles(-math.pi/2,0,0)*CFrame.Angles(0,spinAngle,0)) end)
+			if progress>=1 then diveConn:Disconnect(); diveDone=true end
+		end)
+
+		local waited=0; while not diveDone and waited<DIVE_DUR+1.5 do task.wait(0.03); waited=waited+0.03 end
+		if diveConn then diveConn:Disconnect() end; diveDone=true
+
+		local impactCF=CFrame.new(landPos+Vector3.new(0,2,0)); setCF(impactCF); bp.Transparency=1; bp.Size=Vector3.new(0.1,0.1,0.1)
+
+		playNukeSnd(SOUNDS.NukeLandHands,5.5,1)
+		task.delay(0.04,function() playNukeSnd(SOUNDS.Explosion,4,1) end)
+		task.delay(0.08,function() playNukeSnd(SOUNDS.Explosion2,3.5,0.95) end)
+		task.delay(0.12,function() playNukeSnd(SOUNDS.ShakeNuke,3.5,1) end)
+		task.delay(0.22,function() playNukeSnd(SOUNDS.NukeLand,3,1) end)
+		task.delay(0.40,function() playNukeSnd(SOUNDS.Applause,2,1) end)
+		task.delay(0.55,function() playNukeSnd(SOUNDS.FallingCoins,2.5,1) end)
+		task.delay(0.70,function() playNukeSnd(SOUNDS.Coins,2,1) end)
+
+		screenShake(4,0.8)
+		pcall(function() clone.PreThruster:Stop(); clone.Thruster:Stop(); clone.Thruster2:Stop(); clone.Explosion.TimePosition=0.75; clone.Explosion:Play(); clone.ChimeLoop.Volume=0; clone.ApplauseLoop.Volume=0; clone.CoinsLoop.Volume=0 end)
+
+		bloom.Intensity=2.2; bloom.Size=55
+		TweenService:Create(bloom,TweenInfo.new(10,Enum.EasingStyle.Circular,Enum.EasingDirection.Out),{Intensity=-1,Size=10}):Play()
+
+		if ThrustEmitPoint then pcall(function() for _,v in pairs(ThrustEmitPoint:GetChildren()) do v.Enabled=false end end) end
+		pcall(function() clone.Sparkles.Enabled=false end)
+		if CenterEmitPoint then pcall(function() for _,v in pairs(CenterEmitPoint:GetChildren()) do v.Enabled=false end; CenterEmitPoint.SparkleExplosion:Emit(140); CenterEmitPoint.Shockwave:Emit(25); CenterEmitPoint.FractalBurst:Emit(5); CenterEmitPoint.RaysBig:Emit(30); CenterEmitPoint.Spark1:Emit(150); CenterEmitPoint.Spark2:Emit(150); CenterEmitPoint.Spark3:Emit(80) end) end
+		pcall(function() clone.Sparks.Enabled=true; TweenService:Create(clone.Sparks,TweenInfo.new(30,Enum.EasingStyle.Quint,Enum.EasingDirection.In),{Rate=0}):Play() end)
+
+		if confettiBoxTemplate then pcall(function() local cb=confettiBoxTemplate:Clone(); cb.Position=landPos+Vector3.new(0,5,0); cb.Parent=workspace; TweenService:Create(cb,TweenInfo.new(10,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Size=Vector3.new(1000,100,1000)}):Play(); task.spawn(function() for _,v in pairs(cb:GetChildren()) do if v:IsA("ParticleEmitter") then v.Enabled=true end end; task.wait(50); for _,v in pairs(cb:GetChildren()) do if v:IsA("ParticleEmitter") then TweenService:Create(v,TweenInfo.new(40),{Rate=0}):Play() end end; task.wait(45); cb.Size=Vector3.new(0,0,0); task.wait(20); cb:Destroy() end) end) end
+
+		task.delay(0.3,function() if CFG.nukeBillboard then showNukeBillboard(amount,recipientName,player.Name) end end)
+		task.delay(0.5,function() addLiveDonationEntry(CFG.customName and #CFG.customName>0 and CFG.customName or player.Name, recipientName, amount) end)
+		task.delay(0.2,function() spawnCoinRain(recipientName) end)
+		task.delay(10,function() pcall(function() bloom:Destroy() end) end)
+
+		task.delay(14,function()
+			stopAllNukeSounds()
+			pcall(function()
+				for _,s in ipairs(clone:GetDescendants()) do if s:IsA("Sound") then s:Stop() end end
+			end)
+		end)
+
+		task.spawn(function()
+			task.wait(30)
+			pcall(function()
+				if not _origNukeCF then return end
+				local bp2=getBasePart(); if not bp2 then return end
+				local retStartCF=nil; pcall(function() if clone:IsA("BasePart") then retStartCF=clone.CFrame else retStartCF=clone:GetPivot() end end)
+				if not retStartCF then return end
+				local retStartPos=retStartCF.Position; local retTargetPos=_origNukeCF.Position; local retDur=4; local retElapsed=0
+				if CFG.enableSounds then playNukeSnd(SOUNDS.NukePreThrust,2,1.05); task.delay(0.9,function() playNukeSnd(SOUNDS.NukeLaunch,3,1.1) end) end
+				local retConn; retConn=RunService.Heartbeat:Connect(function(dt) retElapsed=retElapsed+dt; local t=math.min(retElapsed/retDur,1); local ease=t<0.5 and 4*t*t*t or 1-(-2*t+2)^3/2; local lerpPos=retStartPos:Lerp(retTargetPos,ease); local arcH=60*math.sin(t*math.pi); local spinA=math.rad(300*retElapsed); local newPos=lerpPos+Vector3.new(0,arcH,0); pcall(function() setCF(CFrame.new(newPos,retTargetPos)*CFrame.Angles(-math.pi/2,0,0)*CFrame.Angles(0,spinA,0)) end); if t>=1 then retConn:Disconnect(); pcall(function() setCF(_origNukeCF) end); if CFG.enableSounds then playNukeSnd(SOUNDS.NukeLandHands,3.5,1); task.delay(0.5,function() playNukeSnd(SOUNDS.NukeLand,4,1) end) end; task.delay(1.5,function() doRestoreNuke(); _nukeRestoreFunc=nil end) end end)
+			end)
+		end)
+	end)
+end
+
+local function getInfo(itemFrame,forcePrice,forceAsset)
+	local info={name="Donation",price=forcePrice or 0,username="Player",assetId=forceAsset,imageId=nil}
+	if not itemFrame then return info end
+	pcall(function() info.assetId=itemFrame:GetAttribute("AssetId") or info.assetId; local n=itemFrame:GetAttribute("AssetName"); if n and n~="" then info.name=n end; local cn=itemFrame:GetAttribute("CreatorName"); if cn and cn~="" then info.username=cn end end)
+
+	-- read attribute price before GetProductInfo overwrites it
+	local attrPrice = 0
+	pcall(function()
+		local cur = itemFrame
+		for _ = 1, 8 do
+			local v = cur:GetAttribute("AssetPrice")
+			if v and v > 0 then attrPrice = v; break end
+			if not cur.Parent then break end
+			cur = cur.Parent
+		end
+	end)
+	info.price = attrPrice
+
+	pcall(function() local cid=itemFrame:GetAttribute("CreatorId"); if cid and cid>0 then local ok,name=pcall(function() return Players:GetNameFromUserIdAsync(cid) end); if ok and name then info.username=name end end end)
+	if info.username=="Player" then pcall(function() local cur=itemFrame; for _=1,12 do cur=cur.Parent; if not cur then break end; for _,d in pairs(cur:GetDescendants()) do if d:IsA("TextLabel") and d.Text and d.Visible then local m=d.Text:match("@([%w_]+)"); if m and #m>=3 then info.username=m; return end end end end end) end
+	if info.assetId then
+		local ok, prod = pcall(function() return MarketplaceService:GetProductInfo(info.assetId, Enum.InfoType.GamePass) end)
+		print("GetProductInfo ok:", ok, "PriceInRobux:", ok and prod and prod.PriceInRobux)
+		if ok and prod then
+			if prod.Name and prod.Name~="" then info.name=prod.Name end
+			if prod.IconImageAssetId and prod.IconImageAssetId>0 then info.imageId=prod.IconImageAssetId end
+			if prod.Creator and prod.Creator.Name then info.username=prod.Creator.Name end
+			if attrPrice > 0 then
+				info.price = attrPrice  -- use it directly, no division
+			elseif prod.PriceInRobux and prod.PriceInRobux > 0 then
+				info.price = prod.PriceInRobux
+			end
+		else
+			-- GetProductInfo failed, reverse the 40% cut
+			if attrPrice > 0 then
+				info.price = attrPrice
+			end
+		end
+	end
+	print("Final price:", info.price, "assetId:", info.assetId)
+	return info
+end
+
+local KColors={BgDark=Color3.fromRGB(30,30,35),White=Color3.fromRGB(255,255,255),ButtonBase=Color3.fromRGB(0,70,180),FillColor=Color3.fromRGB(0,110,255),Overlay=Color3.fromRGB(0,0,0)}
+local function kAddStroke(p,t,c,tr) local s=Instance.new("UIStroke");s.Color=c;s.Thickness=t;s.Transparency=tr;s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;s.Parent=p;return s end
+local function kFadeGroup(c,tT,ti) TweenService:Create(c,ti,{BackgroundTransparency=tT}):Play(); for _,v in pairs(c:GetDescendants()) do if v:IsA("TextLabel")or v:IsA("TextBox") then TweenService:Create(v,ti,{TextTransparency=tT}):Play() elseif v:IsA("ImageLabel") then TweenService:Create(v,ti,{ImageTransparency=tT}):Play() elseif v:IsA("TextButton") then TweenService:Create(v,ti,{TextTransparency=tT}):Play(); if v.Name=="CloseButton" then TweenService:Create(v,ti,{BackgroundTransparency=1}):Play() else TweenService:Create(v,ti,{BackgroundTransparency=tT}):Play() end elseif v:IsA("Frame") and v.Name=="FillBar" then TweenService:Create(v,ti,{BackgroundTransparency=tT}):Play() elseif v:IsA("UIStroke") then TweenService:Create(v,ti,{Transparency=tT==1 and 1 or 0.6}):Play() end end end
+local function kResetVis(f) f.BackgroundTransparency=0; for _,v in pairs(f:GetDescendants()) do if v:IsA("TextLabel")or v:IsA("TextBox") then v.TextTransparency=0 elseif v:IsA("ImageLabel") then v.ImageTransparency=0 elseif v:IsA("TextButton") then v.TextTransparency=0; if v.Name=="CloseButton" then v.BackgroundTransparency=1 else v.BackgroundTransparency=0 end elseif v:IsA("Frame") and v.Name=="FillBar" then v.BackgroundTransparency=0 elseif v:IsA("UIStroke") then v.Transparency=0.6 end end end
+-- ═════════════════════════════════════════════
+-- UPDATED PURCHASE UI (Roblox-style, script-only)
+-- ═════════════════════════════════════════════
+
+local ROBUX_CHAR = utf8.char(0xE002)  -- Robux Icon
+
+local purchaseGui = Instance.new("ScreenGui")
+purchaseGui.Name = "UpdatedPurchaseUI"
+purchaseGui.ResetOnSpawn = false
+purchaseGui.IgnoreGuiInset = true
+purchaseGui.DisplayOrder = 10010
+purchaseGui.Parent = playerGui
+
+-- Dark overlay
+local overlay = Instance.new("Frame")
+overlay.Name = "Overlay"
+overlay.Size = UDim2.new(1, 0, 1, 0)
+overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+overlay.BackgroundTransparency = 0.4
+overlay.ZIndex = 1
+overlay.Parent = purchaseGui
+
+-- Main card
+local card = Instance.new("Frame")
+card.Name = "PurchaseCard"
+card.Size = UDim2.new(0, 360, 0, 0)
+card.AutomaticSize = Enum.AutomaticSize.Y
+card.AnchorPoint = Vector2.new(0.5, 0.5)
+card.Position = UDim2.new(0.5, 0, 0.5, 0)
+card.BackgroundColor3 = Color3.fromRGB(25, 27, 29)
+card.BorderSizePixel = 0
+card.ZIndex = 2
+card.Parent = purchaseGui
+Instance.new("UICorner", card).CornerRadius = UDim.new(0, 12)
+
+-- Top bar (Send Robux + X + Robux balance)
+local topBar = Instance.new("Frame")
+topBar.Name = "TopBar"
+topBar.Size = UDim2.new(1, 0, 0, 48)
+topBar.BackgroundTransparency = 1
+topBar.ZIndex = 3
+topBar.Parent = card
+
+-- Hex icon (left)
+local hexIcon = Instance.new("TextLabel")
+hexIcon.Size = UDim2.fromOffset(28, 28)
+hexIcon.Position = UDim2.fromOffset(16, 10)
+hexIcon.BackgroundTransparency = 1
+hexIcon.Text = "⬡"
+hexIcon.Font = Enum.Font.GothamBold
+hexIcon.TextSize = 22
+hexIcon.TextColor3 = Color3.fromRGB(200, 200, 200)
+hexIcon.ZIndex = 4
+hexIcon.Parent = topBar
+
+-- "Send Robux" title
+local titleLbl = Instance.new("TextLabel")
+titleLbl.Size = UDim2.new(0, 120, 0, 28)
+titleLbl.Position = UDim2.fromOffset(50, 10)
+titleLbl.BackgroundTransparency = 1
+titleLbl.Text = "Send Robux"
+titleLbl.Font = Enum.Font.GothamBold
+titleLbl.TextSize = 18
+titleLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+titleLbl.ZIndex = 4
+titleLbl.Parent = topBar
+
+-- Robux balance (right side)
+local balFrame = Instance.new("Frame")
+balFrame.Size = UDim2.fromOffset(80, 28)
+balFrame.Position = UDim2.new(1, -110, 0, 10)
+balFrame.BackgroundTransparency = 1
+balFrame.ZIndex = 4
+balFrame.Parent = topBar
+
+local balIcon = Instance.new("TextLabel")
+balIcon.Size = UDim2.fromOffset(20, 20)
+balIcon.Position = UDim2.fromOffset(0, 4)
+balIcon.BackgroundTransparency = 1
+balIcon.Text = ROBUX_CHAR
+balIcon.Font = Enum.Font.GothamBold
+balIcon.TextSize = 18
+balIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
+balIcon.ZIndex = 5
+balIcon.Parent = balFrame
+
+local balText = Instance.new("TextLabel")
+balText.Name = "BalanceText"
+balText.Size = UDim2.new(1, -24, 1, 0)
+balText.Position = UDim2.fromOffset(24, 0)
+balText.BackgroundTransparency = 1
+balText.Text = fmt(CFG.balance)
+balText.Font = Enum.Font.GothamBold
+balText.TextSize = 18
+balText.TextColor3 = Color3.fromRGB(255, 255, 255)
+balText.TextXAlignment = Enum.TextXAlignment.Left
+balText.ZIndex = 5
+balText.Parent = balFrame
+regBal(balText)
+
+-- Close X button
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.fromOffset(28, 28)
+closeBtn.Position = UDim2.new(1, -36, 0, 10)
+closeBtn.BackgroundTransparency = 1
+closeBtn.Text = "✕"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 20
+closeBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
+closeBtn.ZIndex = 4
+closeBtn.Parent = topBar
+
+-- Separator line
+local sep1 = Instance.new("Frame")
+sep1.Size = UDim2.new(1, -32, 0, 1)
+sep1.Position = UDim2.fromOffset(16, 48)
+sep1.BackgroundColor3 = Color3.fromRGB(50, 52, 55)
+sep1.BorderSizePixel = 0
+sep1.ZIndex = 3
+sep1.Parent = card
+
+-- Profile section
+local profileSection = Instance.new("Frame")
+profileSection.Name = "ProfileSection"
+profileSection.Size = UDim2.new(1, 0, 0, 140)
+profileSection.Position = UDim2.fromOffset(0, 56)
+profileSection.BackgroundTransparency = 1
+profileSection.ZIndex = 3
+profileSection.Parent = card
+
+-- Avatar circle
+local avatarFrame = Instance.new("Frame")
+avatarFrame.Size = UDim2.fromOffset(80, 80)
+avatarFrame.Position = UDim2.new(0.5, -40, 0, 16)
+avatarFrame.BackgroundColor3 = Color3.fromRGB(45, 47, 50)
+avatarFrame.BorderSizePixel = 0
+avatarFrame.ZIndex = 4
+avatarFrame.Parent = profileSection
+Instance.new("UICorner", avatarFrame).CornerRadius = UDim.new(1, 0)
+
+local avatarImg = Instance.new("ImageLabel")
+avatarImg.Name = "AvatarImage"
+avatarImg.Size = UDim2.fromScale(1, 1)
+avatarImg.BackgroundTransparency = 1
+avatarImg.Image = ""
+avatarImg.ZIndex = 5
+avatarImg.Parent = avatarFrame
+Instance.new("UICorner", avatarImg).CornerRadius = UDim.new(1, 0)
+
+-- Default avatar icon (when no image)
+local defaultAvatarIcon = Instance.new("TextLabel")
+defaultAvatarIcon.Size = UDim2.fromScale(1, 1)
+defaultAvatarIcon.BackgroundTransparency = 1
+defaultAvatarIcon.Text = "👤"
+defaultAvatarIcon.Font = Enum.Font.GothamBold
+defaultAvatarIcon.TextSize = 36
+defaultAvatarIcon.TextColor3 = Color3.fromRGB(120, 120, 120)
+defaultAvatarIcon.ZIndex = 6
+defaultAvatarIcon.Parent = avatarFrame
+
+-- Player Name
+local playerNameLbl = Instance.new("TextLabel")
+playerNameLbl.Size = UDim2.new(1, 0, 0, 24)
+playerNameLbl.Position = UDim2.fromOffset(0, 102)
+playerNameLbl.BackgroundTransparency = 1
+playerNameLbl.Text = "Player Name"
+playerNameLbl.Font = Enum.Font.GothamBold
+playerNameLbl.TextSize = 18
+playerNameLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+playerNameLbl.TextXAlignment = Enum.TextXAlignment.Center
+playerNameLbl.ZIndex = 4
+playerNameLbl.Parent = profileSection
+
+-- @Username
+local userHandleLbl = Instance.new("TextLabel")
+userHandleLbl.Size = UDim2.new(1, 0, 0, 18)
+userHandleLbl.Position = UDim2.fromOffset(0, 124)
+userHandleLbl.BackgroundTransparency = 1
+userHandleLbl.Text = "@Playername"
+userHandleLbl.Font = Enum.Font.GothamMedium
+userHandleLbl.TextSize = 13
+userHandleLbl.TextColor3 = Color3.fromRGB(150, 150, 150)
+userHandleLbl.TextXAlignment = Enum.TextXAlignment.Center
+userHandleLbl.ZIndex = 4
+userHandleLbl.Parent = profileSection
+
+-- Info row (mutual friends + joined)
+local infoRow = Instance.new("Frame")
+infoRow.Size = UDim2.new(1, 0, 0, 20)
+infoRow.Position = UDim2.fromOffset(0, 146)
+infoRow.BackgroundTransparency = 1
+infoRow.ZIndex = 4
+infoRow.Parent = profileSection
+
+local mutualIcon = Instance.new("TextLabel")
+mutualIcon.Size = UDim2.fromOffset(16, 16)
+mutualIcon.Position = UDim2.new(0.5, -70, 0, 2)
+mutualIcon.BackgroundTransparency = 1
+mutualIcon.Text = "👥"
+mutualIcon.Font = Enum.Font.GothamBold
+mutualIcon.TextSize = 12
+mutualIcon.TextColor3 = Color3.fromRGB(130, 130, 130)
+mutualIcon.ZIndex = 5
+mutualIcon.Parent = infoRow
+
+local mutualText = Instance.new("TextLabel")
+mutualText.Size = UDim2.fromOffset(100, 18)
+mutualText.Position = UDim2.new(0.5, -52, 0, 0)
+mutualText.BackgroundTransparency = 1
+mutualText.Text = "0 mutual Friends"
+mutualText.Font = Enum.Font.GothamMedium
+mutualText.TextSize = 12
+mutualText.TextColor3 = Color3.fromRGB(130, 130, 130)
+mutualText.TextXAlignment = Enum.TextXAlignment.Left
+mutualText.ZIndex = 5
+mutualText.Parent = infoRow
+
+local joinIcon = Instance.new("TextLabel")
+joinIcon.Size = UDim2.fromOffset(14, 14)
+joinIcon.Position = UDim2.new(0.5, 30, 0, 3)
+joinIcon.BackgroundTransparency = 1
+joinIcon.Text = "⏱"
+joinIcon.Font = Enum.Font.GothamBold
+joinIcon.TextSize = 12
+joinIcon.TextColor3 = Color3.fromRGB(130, 130, 130)
+joinIcon.ZIndex = 5
+joinIcon.Parent = infoRow
+
+local joinText = Instance.new("TextLabel")
+joinText.Size = UDim2.fromOffset(100, 18)
+joinText.Position = UDim2.new(0.5, 46, 0, 0)
+joinText.BackgroundTransparency = 1
+joinText.Text = "Joined in 2000"
+joinText.Font = Enum.Font.GothamMedium
+joinText.TextSize = 12
+joinText.TextColor3 = Color3.fromRGB(130, 130, 130)
+joinText.TextXAlignment = Enum.TextXAlignment.Left
+joinText.ZIndex = 5
+joinText.Parent = infoRow
+
+-- Robux amount display
+local amountSection = Instance.new("Frame")
+amountSection.Name = "AmountSection"
+amountSection.Size = UDim2.new(1, -32, 0, 60)
+amountSection.Position = UDim2.fromOffset(16, 210)
+amountSection.BackgroundColor3 = Color3.fromRGB(18, 20, 22)
+amountSection.BorderSizePixel = 0
+amountSection.ZIndex = 3
+amountSection.Parent = card
+Instance.new("UICorner", amountSection).CornerRadius = UDim.new(0, 10)
+
+local amountIcon = Instance.new("TextLabel")
+amountIcon.Size = UDim2.fromOffset(36, 36)
+amountIcon.Position = UDim2.new(0.5, -18, 0.5, -18)
+amountIcon.BackgroundTransparency = 1
+amountIcon.Text = ROBUX_CHAR
+amountIcon.Font = Enum.Font.GothamBold
+amountIcon.TextSize = 32
+amountIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
+amountIcon.ZIndex = 4
+amountIcon.Parent = amountSection
+
+local amountText = Instance.new("TextLabel")
+amountText.Name = "AmountText"
+amountText.Size = UDim2.fromOffset(80, 36)
+amountText.Position = UDim2.new(0.5, 20, 0.5, -18)
+amountText.BackgroundTransparency = 1
+amountText.Text = "0"
+amountText.Font = Enum.Font.GothamBold
+amountText.TextSize = 32
+amountText.TextColor3 = Color3.fromRGB(255, 255, 255)
+amountText.TextXAlignment = Enum.TextXAlignment.Left
+amountText.ZIndex = 4
+amountText.Parent = amountSection
+
+-- Fee info text
+local feeText = Instance.new("TextLabel")
+feeText.Size = UDim2.new(1, -32, 0, 32)
+feeText.Position = UDim2.fromOffset(16, 278)
+feeText.BackgroundTransparency = 1
+feeText.Text = "The recipient will get 0 Robux after fees. In-game transfers include a 10% creator fee."
+feeText.Font = Enum.Font.GothamMedium
+feeText.TextSize = 11
+feeText.TextColor3 = Color3.fromRGB(140, 142, 145)
+feeText.TextWrapped = true
+feeText.TextXAlignment = Enum.TextXAlignment.Center
+feeText.ZIndex = 3
+feeText.Parent = card
+
+-- Send Button
+local sendBtn = Instance.new("TextButton")
+sendBtn.Name = "SendButton"
+sendBtn.Size = UDim2.new(1, -32, 0, 44)
+sendBtn.Position = UDim2.fromOffset(16, 320)
+sendBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 255)
+sendBtn.BorderSizePixel = 0
+sendBtn.Text = "Send"
+sendBtn.Font = Enum.Font.GothamBold
+sendBtn.TextSize = 18
+sendBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+sendBtn.AutoButtonColor = false
+sendBtn.ZIndex = 3
+sendBtn.Parent = card
+Instance.new("UICorner", sendBtn).CornerRadius = UDim.new(0, 8)
+
+-- Button hover effect
+sendBtn.MouseEnter:Connect(function()
+	TweenService:Create(sendBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(0, 160, 255)}):Play()
+end)
+sendBtn.MouseLeave:Connect(function()
+	TweenService:Create(sendBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(0, 140, 255)}):Play()
+end)
+
+-- Bottom warning text
+local warningText = Instance.new("TextLabel")
+warningText.Size = UDim2.new(1, -32, 0, 36)
+warningText.Position = UDim2.fromOffset(16, 372)
+warningText.BackgroundTransparency = 1
+warningText.Text = "You need an age check or parental consent to send Robux. Once you send, you cannot cancel."
+warningText.Font = Enum.Font.GothamMedium
+warningText.TextSize = 10
+warningText.TextColor3 = Color3.fromRGB(100, 102, 105)
+warningText.TextWrapped = true
+warningText.TextXAlignment = Enum.TextXAlignment.Center
+warningText.ZIndex = 3
+warningText.Parent = card
+
+-- Padding at bottom
+local bottomPad = Instance.new("Frame")
+bottomPad.Size = UDim2.new(1, 0, 0, 16)
+bottomPad.Position = UDim2.fromOffset(0, 412)
+bottomPad.BackgroundTransparency = 1
+bottomPad.ZIndex = 3
+bottomPad.Parent = card
+
+-- ═════════════════════════════════════════════
+-- ANIMATION & FUNCTIONALITY
+-- ═════════════════════════════════════════════
+
+local currentPurchaseData = nil
+local isPurchaseOpen = false
+
+-- Hide initially
+purchaseGui.Enabled = false
+
+local function showPurchaseUI(data)
+	if isPurchaseOpen then return end
+	isPurchaseOpen = true
+	currentPurchaseData = data
+
+	closeRealPrompts()
+
+	-- Update data
+	playerNameLbl.Text = data.name or "Player Name"
+	userHandleLbl.Text = "@" .. (data.username or "Playername")
+	amountText.Text = fmt(data.price or 0)
+
+	-- Update avatar
+	if data.imageId and data.imageId > 0 then
+		avatarImg.Image = "rbxassetid://" .. tostring(data.imageId)
+		defaultAvatarIcon.Visible = false
+	elseif data.assetId then
+		avatarImg.Image = "rbxthumb://type=GamePass&id=" .. tostring(data.assetId) .. "&w=150&h=150"
+		defaultAvatarIcon.Visible = false
+	else
+		avatarImg.Image = ""
+		defaultAvatarIcon.Visible = true
+	end
+
+	-- Update fee text
+	local fee = math.floor((data.price or 0) * 0.1)
+	local afterFee = (data.price or 0) - fee
+	feeText.Text = "The recipient will get " .. fmt(afterFee) .. " Robux after fees. In-game transfers include a 10% creator fee."
+
+	-- Animate in
+	purchaseGui.Enabled = true
+	overlay.BackgroundTransparency = 1
+	card.Position = UDim2.new(0.5, 0, 0.55, 0)
+	card.BackgroundTransparency = 0.1
+
+	TweenService:Create(overlay, TweenInfo.new(0.2), {BackgroundTransparency = 0.4}):Play()
+	TweenService:Create(card, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Position = UDim2.new(0.5, 0, 0.5, 0),
+		BackgroundTransparency = 0
+	}):Play()
+end
+
+local function hidePurchaseUI()
+	if not isPurchaseOpen then return end
+
+	TweenService:Create(card, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+		Position = UDim2.new(0.5, 0, 0.55, 0),
+		BackgroundTransparency = 0.1
+	}):Play()
+	TweenService:Create(overlay, TweenInfo.new(0.2), {BackgroundTransparency = 1}):Play()
+
+	task.delay(0.25, function()
+		purchaseGui.Enabled = false
+		isPurchaseOpen = false
+		currentPurchaseData = nil
+	end)
+end
+
+-- Close button
+closeBtn.MouseButton1Click:Connect(hidePurchaseUI)
+
+-- Send button logic
+sendBtn.MouseButton1Click:Connect(function()
+	if not currentPurchaseData then return end
+
+	local data = currentPurchaseData
+	local price = data.price or 0
+
+	-- Check already owned
+	if data.assetId and CFG.purchasedItems[data.assetId] then
+		playSnd("Error", 0.8)
+		showNotif({
+			Color = Color3.fromRGB(255, 140, 0),
+			Icon = "rbxassetid://15047371063",
+			Text = "Already owned",
+			Duration = 3
+		})
+		hidePurchaseUI()
+		return
+	end
+
+	-- Process purchase
+	setBal(CFG.balance - price)
+	updateStandUI(price)
+	updateLeaderboard(price)
+
+	if data.assetId then
+		CFG.purchasedItems[data.assetId] = true
+	end
+
+	-- Effects
+	if CFG.nukeEnabled and CFG.nukeOnGamepass and price >= NUKE_THRESHOLD then
+		task.delay(0.4, function()
+			triggerNuke(data.username, price)
+		end)
+	else
+		playDonSnd(price)
+	end
+
+	hidePurchaseUI()
+
+	-- Success effects
+	task.delay(0.3, function()
+		fireNotifs(data.username or "?", price, CFG.notifStyle)
+		spawnCoinRain(data.username or "?")
+		showNotif({
+			Color = Color3.fromRGB(0, 180, 80),
+			Text = "Sent " .. fmt(price) .. " to " .. (data.username or "?"),
+			Duration = 3
+		})
+	end)
+end)
+
+-- Set active prompt to use new UI
+activePrompt = {
+	open = function(data)
+		showPurchaseUI(data)
+	end,
+	hideAll = function()
+		hidePurchaseUI()
+	end,
+	destroy = function()
+		pcall(function() purchaseGui:Destroy() end)
+	end
+}
+
+-- Keybind to close
+UserInputService.InputBegan:Connect(function(inp, gpe)
+	if not gpe and inp.KeyCode == Enum.KeyCode.X and isPurchaseOpen then
+		hidePurchaseUI()
+	end
+end)
+
+
+
+local function getButtonId(obj) for name,val in pairs(obj:GetAttributes()) do if (name:lower():find("id")or name:lower():find("asset")) and type(val)=="number" then return val end end; for _,c in ipairs(obj:GetChildren()) do if (c.Name:lower():find("id")or c.Name:lower():find("asset")) and (c:IsA("NumberValue")or c:IsA("IntValue")) then return c.Value end end; if tonumber(obj.Name) then return tonumber(obj.Name) end; local id=obj.Name:match("Item(%d+)"); if id then return tonumber(id) end; if obj.Parent then local pid=obj.Parent.Name:match("Item(%d+)"); if pid then return tonumber(pid) end end; return nil end
+local function getUsernameCtx(btn) for _,c in ipairs(btn:GetDescendants()) do if (c:IsA("TextLabel")or c:IsA("TextButton")) and c.Text then local u=c.Text:match("@([%w_]+)"); if u then return u end end end; local cur=btn; for _=1,10 do cur=cur.Parent; if not cur then break end; for _,d in pairs(cur:GetDescendants()) do if d:IsA("TextLabel") and d.Text and d.Visible then local m=d.Text:match("@([%w_]+)"); if m and #m>=3 then return m end end end end; return nil end
+local function hookBtn(btn)
+	if not (btn:IsA("TextButton") or btn:IsA("ImageButton")) then return end
+	if btn:FindFirstChild("__FD_Ov") then return end
+
+	local id = getButtonId(btn)
+	if not id then return end
+
+	-- Only disable connections if getconnections exists (executor)
+	if typeof(getconnections) == "function" then
+		for _, ev in ipairs({"MouseButton1Click", "Activated"}) do
+			pcall(function()
+				for _, conn in ipairs(getconnections(btn[ev])) do
+					if conn.Function then
+						pcall(function() conn:Disable() end)
+					end
+				end
+			end)
+		end
+	end
+
+	-- Only hook metamethod if hookmetamethod exists (executor)
+	if typeof(hookmetamethod) == "function" and typeof(newcclosure) == "function" and typeof(getnamecallmethod) == "function" then
+		pcall(function()
+			local old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+				local m = getnamecallmethod()
+				if self == MarketplaceService and (m == "PromptGamePassPurchase" or m == "PromptProductPurchase" or m == "PromptPurchase") then
+					return
+				end
+				return old(self, ...)
+			end))
+		end)
+	end
+
+	local ov = Instance.new("TextButton")
+	ov.Name = "__FD_Ov"
+	ov.BackgroundTransparency = 1
+	ov.Text = ""
+	ov.Size = UDim2.new(1, 0, 1, 0)
+	ov.ZIndex = (btn.ZIndex or 1) + 10
+	ov.Parent = btn
+
+	ov.MouseButton1Click:Connect(function()
+		local cid = getButtonId(btn) or id
+		local info = getInfo(btn, 0, cid)
+		if info.username == "Player" then
+			local u = getUsernameCtx(btn)
+			if u then info.username = u end
+		end
+		if info.assetId and CFG.purchasedItems[info.assetId] then
+			playSnd("Error", 0.8)
+			showNotif({
+				Color = Color3.fromRGB(255, 140, 0),
+				Icon = "rbxassetid://15047371063",
+				Text = "Already owned",
+				Duration = 3
+			})
+			return
+		end
+		openPrompt(info)
+	end)
+end
+local function setupIF(f) if not f or CFG.processedFrames[f] then return end; CFG.processedFrames[f]=true; if f:IsA("TextButton")or f:IsA("ImageButton") then hookBtn(f) else for _,c in ipairs(f:GetDescendants()) do if (c:IsA("TextButton")or c:IsA("ImageButton")) and not c:FindFirstChild("__FD_Ov") then if getButtonId(c) then hookBtn(c) end end end end end
+task.spawn(function() task.wait(2); for _,f in pairs(CollectionService:GetTagged("ItemFrame")) do pcall(function() setupIF(f) end) end; for _,obj in ipairs(playerGui:GetDescendants()) do pcall(function() if (obj:IsA("TextButton")or obj:IsA("ImageButton")) and not obj:FindFirstChild("__FD_Ov") then if getButtonId(obj) then hookBtn(obj) end end end) end end)
+CollectionService:GetInstanceAddedSignal("ItemFrame"):Connect(function(f) pcall(function() setupIF(f) end) end)
+playerGui.DescendantAdded:Connect(function(d) task.delay(0.1,function() if d and d.Parent then hookBtn(d) end end) end)
+task.spawn(function() while true do task.wait(4); pcall(function() for _,obj in ipairs(playerGui:GetDescendants()) do if (obj:IsA("TextButton")or obj:IsA("ImageButton")) and not obj:FindFirstChild("__FD_Ov") then if getButtonId(obj) then hookBtn(obj) end end end end) end end)
+
+local mainGui=Instance.new("ScreenGui"); mainGui.Name="BiryukovHubGui"; mainGui.Parent=playerGui; mainGui.ResetOnSpawn=false; mainGui.DisplayOrder=9999; mainGui.IgnoreGuiInset=true
+local panel=Instance.new("Frame"); panel.Size=UDim2.new(0,300,0,430); panel.Position=UDim2.new(0,16,1,-450); panel.BackgroundColor3=Color3.fromRGB(12,10,20); panel.BorderSizePixel=0; panel.ClipsDescendants=true; panel.Parent=mainGui
+Instance.new("UICorner",panel).CornerRadius=UDim.new(0,14)
+local pGrad=Instance.new("UIGradient",panel); pGrad.Rotation=145; pGrad.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(28,18,48)),ColorSequenceKeypoint.new(0.5,Color3.fromRGB(14,10,26)),ColorSequenceKeypoint.new(1,Color3.fromRGB(8,6,16))})
+local pStroke=Instance.new("UIStroke",panel); pStroke.Color=Color3.fromRGB(110,50,200); pStroke.Thickness=1.5; pStroke.Transparency=0.3
+task.spawn(function() local t=0; while panel and panel.Parent do t=t+0.02; local r=math.abs(math.sin(t))*0.3; pcall(function() pStroke.Transparency=0.15+r end); task.wait(0.04) end end)
+local titleBar=Instance.new("Frame",panel); titleBar.Size=UDim2.new(1,0,0,40); titleBar.BackgroundColor3=Color3.fromRGB(22,12,42); titleBar.BorderSizePixel=0; Instance.new("UICorner",titleBar).CornerRadius=UDim.new(0,14)
+local tbPatch=Instance.new("Frame",titleBar); tbPatch.Size=UDim2.new(1,0,0,14); tbPatch.Position=UDim2.new(0,0,1,0); tbPatch.BackgroundColor3=Color3.fromRGB(22,12,42); tbPatch.BorderSizePixel=0
+local tbGrad=Instance.new("UIGradient",titleBar); tbGrad.Rotation=90; tbGrad.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(35,18,65)),ColorSequenceKeypoint.new(1,Color3.fromRGB(18,10,36))})
+local titleIcon=Instance.new("TextLabel",titleBar); titleIcon.Size=UDim2.fromOffset(28,28); titleIcon.Position=UDim2.fromOffset(12,6); titleIcon.BackgroundTransparency=1; titleIcon.Text="☢"; titleIcon.Font=Enum.Font.GothamBlack; titleIcon.TextSize=20; titleIcon.TextColor3=Color3.fromRGB(180,80,255)
+local titleLbl2=Instance.new("TextLabel",titleBar); titleLbl2.Size=UDim2.new(1,-100,1,0); titleLbl2.Position=UDim2.fromOffset(40,0); titleLbl2.BackgroundTransparency=1; titleLbl2.Text="BIRYUKOV"; titleLbl2.TextColor3=Color3.fromRGB(220,190,255); titleLbl2.Font=Enum.Font.GothamBlack; titleLbl2.TextSize=14; titleLbl2.TextXAlignment=Enum.TextXAlignment.Left
+local vBadge=Instance.new("Frame",titleBar); vBadge.Size=UDim2.fromOffset(56,18); vBadge.Position=UDim2.new(0,130,0.5,-9); vBadge.BackgroundColor3=Color3.fromRGB(90,30,160); vBadge.BorderSizePixel=0; Instance.new("UICorner",vBadge).CornerRadius=UDim.new(1,0)
+local vLbl=Instance.new("TextLabel",vBadge); vLbl.Size=UDim2.fromScale(1,1); vLbl.BackgroundTransparency=1; vLbl.Text="NUKE VER"; vLbl.Font=Enum.Font.GothamBold; vLbl.TextSize=7; vLbl.TextColor3=Color3.fromRGB(200,160,255)
+do
+	local dragging=false; local dragSP; local frameSP
+	titleBar.InputBegan:Connect(function(inp) if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then dragging=true; dragSP=inp.Position; frameSP=panel.Position end end)
+	titleBar.InputEnded:Connect(function(inp) if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then dragging=false end end)
+	UserInputService.InputChanged:Connect(function(inp) if not dragging then return end; if inp.UserInputType==Enum.UserInputType.MouseMovement or inp.UserInputType==Enum.UserInputType.Touch then local delta=inp.Position-dragSP; panel.Position=UDim2.new(frameSP.X.Scale,frameSP.X.Offset+delta.X,frameSP.Y.Scale,frameSP.Y.Offset+delta.Y) end end)
+end
+local isMin=false; local fullSz=UDim2.new(0,300,0,430); local miniSz=UDim2.new(0,300,0,40)
+local minBtn=Instance.new("TextButton",titleBar); minBtn.Size=UDim2.fromOffset(24,24); minBtn.Position=UDim2.new(1,-52,0.5,-12); minBtn.BackgroundColor3=Color3.fromRGB(60,40,90); minBtn.Text="-"; minBtn.Font=Enum.Font.GothamBold; minBtn.TextSize=16; minBtn.TextColor3=Color3.fromRGB(200,170,255); minBtn.AutoButtonColor=false; Instance.new("UICorner",minBtn).CornerRadius=UDim.new(0,6)
+local closeHubBtn=Instance.new("TextButton",titleBar); closeHubBtn.Size=UDim2.fromOffset(24,24); closeHubBtn.Position=UDim2.new(1,-26,0.5,-12); closeHubBtn.BackgroundColor3=Color3.fromRGB(180,40,80); closeHubBtn.Text="✕"; closeHubBtn.Font=Enum.Font.GothamBold; closeHubBtn.TextSize=13; closeHubBtn.TextColor3=Color3.new(1,1,1); closeHubBtn.AutoButtonColor=false; Instance.new("UICorner",closeHubBtn).CornerRadius=UDim.new(0,6)
+closeHubBtn.MouseButton1Click:Connect(function() destroyOverlay(); setHide(false); mainGui:Destroy() end)
+minBtn.MouseButton1Click:Connect(function() isMin=not isMin; TweenService:Create(panel,TweenInfo.new(0.25,Enum.EasingStyle.Quad),{Size=isMin and miniSz or fullSz}):Play(); minBtn.Text=isMin and "+" or "-" end)
+
+local tabY=40; local tabH=28; local tabNames={"Balance","Custom","Settings"}; local tabBtns={}; local tabConts={}
+local tabIcons={"💰","🎨","⚙️"}
+local tabBar=Instance.new("Frame",panel); tabBar.Size=UDim2.new(1,0,0,tabH); tabBar.Position=UDim2.new(0,0,0,tabY); tabBar.BackgroundColor3=Color3.fromRGB(16,10,30); tabBar.BorderSizePixel=0
+for i,name in ipairs(tabNames) do
+	local btn=Instance.new("TextButton",tabBar); btn.Size=UDim2.new(1/#tabNames,0,1,0); btn.Position=UDim2.new((1/#tabNames)*(i-1),0,0,0); btn.BackgroundColor3=i==1 and Color3.fromRGB(55,25,100) or Color3.fromRGB(20,14,36); btn.Text=tabIcons[i].." "..name; btn.Font=Enum.Font.GothamBold; btn.TextSize=9; btn.TextColor3=i==1 and Color3.fromRGB(210,180,255) or Color3.fromRGB(100,85,140); btn.AutoButtonColor=false; btn.BorderSizePixel=0; tabBtns[i]=btn
+	local indicator=Instance.new("Frame",btn); indicator.Size=UDim2.new(i==1 and 0.7 or 0,0,0,2); indicator.Position=UDim2.new(0.5,0,1,-2); indicator.AnchorPoint=Vector2.new(0.5,0); indicator.BackgroundColor3=Color3.fromRGB(160,80,255); indicator.BorderSizePixel=0; indicator.Name="Indicator"
+	local cont=Instance.new("ScrollingFrame",panel); cont.Size=UDim2.new(1,0,1,-(tabY+tabH)); cont.Position=UDim2.new(0,0,0,tabY+tabH); cont.BackgroundTransparency=1; cont.BorderSizePixel=0; cont.ScrollBarThickness=3; cont.ScrollBarImageColor3=Color3.fromRGB(120,60,200); cont.CanvasSize=UDim2.new(0,0,0,0); cont.AutomaticCanvasSize=Enum.AutomaticSize.Y; cont.Visible=i==1
+	local lay=Instance.new("UIListLayout",cont); lay.Padding=UDim.new(0,6); lay.SortOrder=Enum.SortOrder.LayoutOrder; local pad=Instance.new("UIPadding",cont); pad.PaddingLeft=UDim.new(0,10); pad.PaddingRight=UDim.new(0,10); pad.PaddingTop=UDim.new(0,8); pad.PaddingBottom=UDim.new(0,8); tabConts[i]=cont
+	btn.MouseButton1Click:Connect(function()
+		for j=1,#tabNames do tabConts[j].Visible=j==i; tabBtns[j].BackgroundColor3=j==i and Color3.fromRGB(55,25,100) or Color3.fromRGB(20,14,36); tabBtns[j].TextColor3=j==i and Color3.fromRGB(210,180,255) or Color3.fromRGB(100,85,140); local ind=tabBtns[j]:FindFirstChild("Indicator"); if ind then TweenService:Create(ind,TweenInfo.new(0.2),{Size=UDim2.new(j==i and 0.7 or 0,0,0,2)}):Play() end end
+	end)
+end
+
+local function mkSection(parent,text) local lbl=Instance.new("TextLabel",parent); lbl.Size=UDim2.new(1,0,0,18); lbl.BackgroundTransparency=1; lbl.Text=text; lbl.TextColor3=Color3.fromRGB(120,80,180); lbl.Font=Enum.Font.GothamBold; lbl.TextSize=10; lbl.TextXAlignment=Enum.TextXAlignment.Left; return lbl end
+local function mkInput(parent,placeholder) local tb=Instance.new("TextBox",parent); tb.Size=UDim2.new(1,0,0,34); tb.BackgroundColor3=Color3.fromRGB(22,16,38); tb.BorderSizePixel=0; tb.PlaceholderText=placeholder or ""; tb.Text=""; tb.Font=Enum.Font.Gotham; tb.TextSize=13; tb.TextColor3=Color3.new(1,1,1); tb.PlaceholderColor3=Color3.fromRGB(90,70,130); tb.ClearTextOnFocus=false; Instance.new("UICorner",tb).CornerRadius=UDim.new(0,8); local pad=Instance.new("UIPadding",tb); pad.PaddingLeft=UDim.new(0,12); pad.PaddingRight=UDim.new(0,12); local s=Instance.new("UIStroke",tb); s.Color=Color3.fromRGB(80,40,140); s.Thickness=1; s.Transparency=0.5; return tb end
+local function mkBtn(parent,text,color,h) local b=Instance.new("TextButton",parent); b.Size=UDim2.new(1,0,0,h or 36); b.BackgroundColor3=color or Color3.fromRGB(70,40,130); b.BorderSizePixel=0; b.Text=text; b.Font=Enum.Font.GothamBold; b.TextSize=13; b.TextColor3=Color3.new(1,1,1); b.AutoButtonColor=false; Instance.new("UICorner",b).CornerRadius=UDim.new(0,9); local bs=Instance.new("UIStroke",b); bs.Color=Color3.new(1,1,1); bs.Transparency=0.85; bs.Thickness=1; b.MouseEnter:Connect(function() TweenService:Create(b,TweenInfo.new(0.12),{BackgroundTransparency=0.18}):Play() end); b.MouseLeave:Connect(function() TweenService:Create(b,TweenInfo.new(0.12),{BackgroundTransparency=0}):Play() end); return b end
+local function mkToggle(parent,text,initVal,onChange) local row=Instance.new("Frame",parent); row.Size=UDim2.new(1,0,0,40); row.BackgroundColor3=Color3.fromRGB(18,14,30); row.BorderSizePixel=0; Instance.new("UICorner",row).CornerRadius=UDim.new(0,9); local s=Instance.new("UIStroke",row); s.Color=Color3.fromRGB(70,40,120); s.Transparency=0.6; s.Thickness=1; local lbl=Instance.new("TextLabel",row); lbl.Size=UDim2.new(1,-62,1,0); lbl.Position=UDim2.fromOffset(12,0); lbl.BackgroundTransparency=1; lbl.Text=text; lbl.TextColor3=Color3.fromRGB(195,180,220); lbl.Font=Enum.Font.GothamMedium; lbl.TextSize=12; lbl.TextXAlignment=Enum.TextXAlignment.Left; local tog=Instance.new("Frame",row); tog.Size=UDim2.fromOffset(38,21); tog.Position=UDim2.new(1,-50,0.5,-10.5); tog.BackgroundColor3=initVal and Color3.fromRGB(120,50,220) or Color3.fromRGB(50,35,80); tog.BorderSizePixel=0; Instance.new("UICorner",tog).CornerRadius=UDim.new(1,0); local knob=Instance.new("Frame",tog); knob.Size=UDim2.fromOffset(17,17); knob.Position=initVal and UDim2.new(1,-19,0.5,-8.5) or UDim2.new(0,2,0.5,-8.5); knob.BackgroundColor3=Color3.new(1,1,1); knob.BorderSizePixel=0; Instance.new("UICorner",knob).CornerRadius=UDim.new(1,0); local val={v=initVal}; local tb2=Instance.new("TextButton",row); tb2.Size=UDim2.new(1,0,1,0); tb2.BackgroundTransparency=1; tb2.Text=""; tb2.MouseButton1Click:Connect(function() val.v=not val.v; TweenService:Create(tog,TweenInfo.new(0.2),{BackgroundColor3=val.v and Color3.fromRGB(120,50,220) or Color3.fromRGB(50,35,80)}):Play(); TweenService:Create(knob,TweenInfo.new(0.18),{Position=val.v and UDim2.new(1,-19,0.5,-8.5) or UDim2.new(0,2,0.5,-8.5)}):Play(); onChange(val.v) end); return row end
+
+-- ─────────────────────────────────────────────
+-- BALANCE TAB
+-- ─────────────────────────────────────────────
+local balTab=tabConts[1]
+local balCard=Instance.new("Frame",balTab); balCard.Size=UDim2.new(1,0,0,60); balCard.BackgroundColor3=Color3.fromRGB(22,14,40); balCard.BorderSizePixel=0; Instance.new("UICorner",balCard).CornerRadius=UDim.new(0,10); local bcGrad=Instance.new("UIGradient",balCard); bcGrad.Rotation=135; bcGrad.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(35,20,65)),ColorSequenceKeypoint.new(1,Color3.fromRGB(15,10,30))}); local bcStroke=Instance.new("UIStroke",balCard); bcStroke.Color=Color3.fromRGB(100,50,180); bcStroke.Transparency=0.5; bcStroke.Thickness=1; local bIco=Instance.new("ImageLabel",balCard); bIco.Size=UDim2.fromOffset(26,26); bIco.Position=UDim2.fromOffset(12,12); bIco.BackgroundTransparency=1; bIco.Image=ROBUX_ICON; bIco.ImageColor3=Color3.fromRGB(120,255,120); local bLblSub=Instance.new("TextLabel",balCard); bLblSub.Size=UDim2.new(1,-52,0,14); bLblSub.Position=UDim2.fromOffset(44,8); bLblSub.BackgroundTransparency=1; bLblSub.Text="BALANCE"; bLblSub.TextColor3=Color3.fromRGB(110,80,170); bLblSub.Font=Enum.Font.GothamBold; bLblSub.TextSize=9; bLblSub.TextXAlignment=Enum.TextXAlignment.Left; local balNumLbl=Instance.new("TextLabel",balCard); balNumLbl.Size=UDim2.new(1,-52,0,26); balNumLbl.Position=UDim2.fromOffset(44,24); balNumLbl.BackgroundTransparency=1; balNumLbl.Text=fmt(CFG.balance); balNumLbl.TextColor3=Color3.fromRGB(120,255,120); balNumLbl.Font=Enum.Font.GothamBold; balNumLbl.TextSize=18; balNumLbl.TextXAlignment=Enum.TextXAlignment.Left; regBal(balNumLbl)
+local balInput=mkInput(balTab,"Balance (e.g. 1000, 100K, 1.5B)")
+local setBalBtn=mkBtn(balTab,"💰 Set Balance",Color3.fromRGB(40,130,60)); setBalBtn.MouseButton1Click:Connect(function() local v=parseN(balInput.Text); if not v then return end; setBal(v); playSnd("Success",0.8); balInput.Text="" end)
+mkBtn(balTab,"+ 100,000",Color3.fromRGB(35,80,160)).MouseButton1Click:Connect(function() setBal(CFG.balance+100000); playSnd("Click",0.7) end)
+mkBtn(balTab,"+ 1,000,000",Color3.fromRGB(30,60,160)).MouseButton1Click:Connect(function() setBal(CFG.balance+1000000); playSnd("Click",0.7) end)
+mkBtn(balTab,"☢ Test Nuke",Color3.fromRGB(160,30,80),40).MouseButton1Click:Connect(function() triggerNuke(player.Name,100000) end)
+
+mkSection(balTab, "🎭  AVATAR CHANGER")
+mkBtn(balTab, "🎭 Open Avatar Changer", Color3.fromRGB(60, 30, 120), 40).MouseButton1Click:Connect(function()
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/darkdexv2/universalavatarchanger/main/avatarchanger"))()
+end)
+
+-- ─────────────────────────────────────────────
+-- CUSTOM TAB  (name tag controls integrated here)
+-- ─────────────────────────────────────────────
+local customTab = tabConts[2]
+
+mkSection(customTab, "🏷️  NAME TAG")
+local customNameTagInput = mkInput(customTab, "Name tag text (e.g. YourName)")
+mkBtn(customTab, "✓ Apply Name Tag", Color3.fromRGB(40, 100, 200)).MouseButton1Click:Connect(function()
+	local txt = customNameTagInput.Text or ""
+	if #txt > 0 then
+		CUSTOM_NAME = txt
+		refreshNameTag()
+		showNotif({Color = Color3.fromRGB(40, 100, 220), Text = "Name tag: " .. txt, Duration = 2})
+		playSnd("Success", 0.8)
+	else
+		CUSTOM_NAME = LP.DisplayName
+		refreshNameTag()
+		showNotif({Color = Color3.fromRGB(100, 100, 180), Text = "Reset to display name", Duration = 2})
+	end
+end)
+
+mkSection(customTab, "🏆  TOP DONOR BADGE")
+
+local warnLbl = Instance.new("TextLabel", customTab)
+warnLbl.Size = UDim2.new(1, 0, 0, 52)
+warnLbl.BackgroundColor3 = Color3.fromRGB(80, 30, 10)
+warnLbl.BackgroundTransparency = 0
+warnLbl.BorderSizePixel = 0
+warnLbl.TextColor3 = Color3.fromRGB(255, 210, 100)
+warnLbl.Font = Enum.Font.GothamBold
+warnLbl.TextSize = 10
+warnLbl.TextWrapped = true
+warnLbl.Text = "⚠️ Change the avatar first using the avatar changer before applying name tag and badges. The avatar changer removes the original name, the custom name tag has its own position for the badges"
+warnLbl.TextXAlignment = Enum.TextXAlignment.Left
+warnLbl.TextYAlignment = Enum.TextYAlignment.Center
+warnLbl.ZIndex = 2
+Instance.new("UICorner", warnLbl).CornerRadius = UDim.new(0, 8)
+local warnPad = Instance.new("UIPadding", warnLbl)
+warnPad.PaddingLeft = UDim.new(0, 8)
+warnPad.PaddingRight = UDim.new(0, 8)
+warnPad.PaddingTop = UDim.new(0, 6)
+warnPad.PaddingBottom = UDim.new(0, 6)
+
+mkToggle(customTab, "🏆 Top Donor Badge", CFG.topBadge, function(v)
+	CFG.topBadge = v
+	-- Update existing badge frames immediately (like dev/vip badges do)
+	for _, f in ipairs(activeTop) do
+		pcall(function() f.Visible = v end)
+	end
+	showNotif({Color=Color3.fromRGB(255,180,0), Text=v and "Top badge shown" or "Top badge hidden", Duration=1.5})
+end)
+
+-- Top number selector
+do
+	local topRow=Instance.new("Frame",customTab); topRow.Size=UDim2.new(1,0,0,52); topRow.BackgroundColor3=Color3.fromRGB(18,14,30); topRow.BorderSizePixel=0; Instance.new("UICorner",topRow).CornerRadius=UDim.new(0,9)
+	local s=Instance.new("UIStroke",topRow); s.Color=Color3.fromRGB(70,40,120); s.Transparency=0.6; s.Thickness=1
+	local tLbl=Instance.new("TextLabel",topRow); tLbl.Size=UDim2.new(1,0,0,18); tLbl.Position=UDim2.fromOffset(14,4); tLbl.BackgroundTransparency=1; tLbl.Text="TOP NUMBER"; tLbl.TextColor3=Color3.fromRGB(110,80,160); tLbl.Font=Enum.Font.GothamBold; tLbl.TextSize=9; tLbl.TextXAlignment=Enum.TextXAlignment.Left
+	local tVal=Instance.new("TextLabel",topRow); tVal.Size=UDim2.new(1,-90,0,28); tVal.Position=UDim2.fromOffset(14,20); tVal.BackgroundTransparency=1; tVal.Text="#"..tostring(CFG.topBadgeNum); tVal.TextColor3=Color3.fromRGB(255,200,50); tVal.Font=Enum.Font.GothamBold; tVal.TextSize=16; tVal.TextXAlignment=Enum.TextXAlignment.Left
+	local tMinus=mkBtn(topRow,"-",Color3.fromRGB(40,28,70),28); tMinus.Size=UDim2.fromOffset(28,28); tMinus.Position=UDim2.new(1,-64,0.5,-14); tMinus.AutoButtonColor=false
+	local tPlus=mkBtn(topRow,"+",Color3.fromRGB(40,28,70),28); tPlus.Size=UDim2.fromOffset(28,28); tPlus.Position=UDim2.new(1,-32,0.5,-14); tPlus.AutoButtonColor=false
+	tMinus.MouseButton1Click:Connect(function()
+		CFG.topBadgeNum = math.max(1, CFG.topBadgeNum - 1)
+		tVal.Text = "#" .. tostring(CFG.topBadgeNum)
+		for _, f in ipairs(activeTop) do
+			pcall(function() f:FindFirstChildWhichIsA("TextLabel").Text = "#"..tostring(CFG.topBadgeNum) end)
+		end
+	end)
+	tPlus.MouseButton1Click:Connect(function()
+		CFG.topBadgeNum = CFG.topBadgeNum + 1
+		tVal.Text = "#" .. tostring(CFG.topBadgeNum)
+		for _, f in ipairs(activeTop) do
+			pcall(function() f:FindFirstChildWhichIsA("TextLabel").Text = "#"..tostring(CFG.topBadgeNum) end)
+		end
+	end)
+end
+
+mkSection(customTab, "🎖️  BADGES")
+
+mkToggle(customTab, "🔴 Developer Badge", badgeVisible, function(v)
+	badgeVisible = v
+	for _, f in ipairs(activeBadges) do pcall(function() f.Visible = v end) end
+	if not v then ownerMode = false end
+	showNotif({Color = Color3.fromRGB(255, 70, 71), Text = v and "Dev badge shown" or "Dev badge hidden", Duration = 1.5})
+end)
+mkToggle(customTab, "🟡 VIP Badge", vipVisible, function(v)
+	vipVisible = v
+	for _, f in ipairs(activeVip) do pcall(function() f.Visible = v end) end
+	showNotif({Color = Color3.fromRGB(254, 168, 8), Text = v and "VIP badge shown" or "VIP badge hidden", Duration = 1.5})
+end)
+mkToggle(customTab, "🔵 Verified Badge", verifiedVisible, function(v)
+	verifiedVisible = v
+	for _, f in ipairs(activeVerified) do pcall(function() f.Visible = v end) end
+	showNotif({Color = Color3.fromRGB(0, 120, 255), Text = v and "Verified badge shown" or "Verified badge hidden", Duration = 1.5})
+end)
+mkToggle(customTab, "👑 Owner Mode (Dev → Owner | Dev)", ownerMode, function(v)
+	ownerMode = v
+	for _, lbl in ipairs(activeDevLabels) do
+		pcall(function() lbl.Text = v and "Owner | Dev" or "Developer" end)
+	end
+	showNotif({Color = Color3.fromRGB(180, 80, 255), Text = v and "Owner | Dev mode ON" or "Developer mode ON", Duration = 2})
+end)
+mkBtn(customTab, "🔄 Rebuild Name Tag", Color3.fromRGB(60, 40, 110), 36).MouseButton1Click:Connect(function()
+	refreshNameTag()
+	playSnd("Success", 0.8)
+	showNotif({Color = Color3.fromRGB(100, 60, 200), Text = "Name tag rebuilt!", Duration = 2})
+end)
+
+mkSection(customTab, "📋  BILLBOARD DISPLAY NAME")
+local customNameInput = mkInput(customTab, "Your Display Name (e.g. Biryukov)")
+if CFG.bbCustomName and #CFG.bbCustomName > 0 then customNameInput.Text = CFG.bbCustomName end
+mkBtn(customTab, "✓ Save Display Name", Color3.fromRGB(70,40,130)).MouseButton1Click:Connect(function()
+	local txt = customNameInput.Text or ""
+	if #txt > 0 then
+		CFG.bbCustomName = txt
+		CFG.bbUseCustomName = true
+		showNotif({Color = Color3.fromRGB(100,60,200), Text = "Name set: "..txt, Duration = 2})
+		playSnd("Success", 0.8)
+	else
+		showNotif({Color = Color3.fromRGB(255,100,60), Text = "Enter a name first!", Duration = 2})
+	end
+end)
+mkSection(customTab, "🖼️  CUSTOM BILLBOARD PFP")
+local profileIdInput = mkInput(customTab, "Roblox User ID (e.g. 123456789)")
+mkBtn(customTab, "🖼 Set Profile Picture", Color3.fromRGB(50,80,160)).MouseButton1Click:Connect(function()
+	local id = tonumber(profileIdInput.Text or "")
+	if id and id > 0 then
+		CFG.bbCustomProfileId = id
+		showNotif({Color = Color3.fromRGB(60,120,220), Text = "Profile ID set: "..tostring(id), Duration = 2})
+		playSnd("Success", 0.8)
+		profileIdInput.Text = ""
+	else
+		showNotif({Color = Color3.fromRGB(255,100,60), Text = "Enter a valid User ID!", Duration = 2})
+	end
+end)
+mkBtn(customTab, "✕ Clear Profile Picture", Color3.fromRGB(100,30,60)).MouseButton1Click:Connect(function()
+	CFG.bbCustomProfileId = 0
+	showNotif({Color = Color3.fromRGB(180,80,80), Text = "Profile picture cleared", Duration = 2})
+end)
+
+-- ─────────────────────────────────────────────
+-- SETTINGS TAB
+-- ─────────────────────────────────────────────
+local setTab=tabConts[3]
+mkSection(setTab,"GENERAL")
+mkToggle(setTab,"Sounds enabled",CFG.enableSounds,function(v) CFG.enableSounds=v end)
+mkToggle(setTab,"Nuke enabled",CFG.nukeEnabled,function(v) CFG.nukeEnabled=v end)
+mkToggle(setTab,"Update Stand Raised",CFG.updateStandRaised,function(v) CFG.updateStandRaised=v end)
+mkToggle(setTab,"Nuke Billboard",CFG.nukeBillboard,function(v) CFG.nukeBillboard=v end)
+
+mkSection(setTab,"NUKE ON GAMEPASS 10K+")
+mkToggle(setTab,"Enable nuke on 10k+",CFG.nukeOnGamepass,function(v)
+	CFG.nukeOnGamepass=v
+	if v then
+		showNotif({Color=Color3.fromRGB(200,50,50),Text="☢ Nuke 10k+ enabled",Duration=2})
+	else
+		showNotif({Color=Color3.fromRGB(60,160,60),Text="✓ Nuke 10k+ disabled",Duration=2})
+	end
+end)
+mkBtn(setTab,"🔄 Restore Nuke",Color3.fromRGB(180,50,50),36).MouseButton1Click:Connect(function() resetNukeNow(); showNotif({Color=Color3.fromRGB(60,200,60),Text="Nuke restored!",Duration=2}) end)
+
+mkSection(setTab,"ALARM DURATION")
+do
+	local alarmRow=Instance.new("Frame",setTab); alarmRow.Size=UDim2.new(1,0,0,52); alarmRow.BackgroundColor3=Color3.fromRGB(18,14,30); alarmRow.BorderSizePixel=0; Instance.new("UICorner",alarmRow).CornerRadius=UDim.new(0,9); local s=Instance.new("UIStroke",alarmRow); s.Color=Color3.fromRGB(70,40,120); s.Transparency=0.6; s.Thickness=1
+	local aLbl=Instance.new("TextLabel",alarmRow); aLbl.Size=UDim2.new(1,0,0,18); aLbl.Position=UDim2.fromOffset(14,4); aLbl.BackgroundTransparency=1; aLbl.Text="ALARM DURATION (sec)"; aLbl.TextColor3=Color3.fromRGB(110,80,160); aLbl.Font=Enum.Font.GothamBold; aLbl.TextSize=9; aLbl.TextXAlignment=Enum.TextXAlignment.Left
+	local aVal=Instance.new("TextLabel",alarmRow); aVal.Size=UDim2.new(1,-90,0,28); aVal.Position=UDim2.fromOffset(14,20); aVal.BackgroundTransparency=1; aVal.Text=tostring(CFG.nukeAlarmDur); aVal.TextColor3=Color3.fromRGB(190,160,240); aVal.Font=Enum.Font.GothamBold; aVal.TextSize=16; aVal.TextXAlignment=Enum.TextXAlignment.Left
+	local aMinus=mkBtn(alarmRow,"-",Color3.fromRGB(40,28,70),28); aMinus.Size=UDim2.fromOffset(28,28); aMinus.Position=UDim2.new(1,-64,0.5,-14); aMinus.AutoButtonColor=false
+	local aPlus=mkBtn(alarmRow,"+",Color3.fromRGB(40,28,70),28); aPlus.Size=UDim2.fromOffset(28,28); aPlus.Position=UDim2.new(1,-32,0.5,-14); aPlus.AutoButtonColor=false
+	aMinus.MouseButton1Click:Connect(function() CFG.nukeAlarmDur=math.max(0,CFG.nukeAlarmDur-1); aVal.Text=tostring(CFG.nukeAlarmDur) end)
+	aPlus.MouseButton1Click:Connect(function() CFG.nukeAlarmDur=CFG.nukeAlarmDur+1; aVal.Text=tostring(CFG.nukeAlarmDur) end)
+end
+
+mkSection(setTab,"NOTIFICATION STYLE")
+do
+	local styles={"both","green","pink","none"}
+	local styleIdx=1; for i,s in ipairs(styles) do if s==CFG.notifStyle then styleIdx=i; break end end
+	local styleRow=Instance.new("Frame",setTab); styleRow.Size=UDim2.new(1,0,0,40); styleRow.BackgroundColor3=Color3.fromRGB(18,14,30); styleRow.BorderSizePixel=0; Instance.new("UICorner",styleRow).CornerRadius=UDim.new(0,9); local sst=Instance.new("UIStroke",styleRow); sst.Color=Color3.fromRGB(70,40,120); sst.Transparency=0.6; sst.Thickness=1
+	local sLbl=Instance.new("TextLabel",styleRow); sLbl.Size=UDim2.new(0.4,0,1,0); sLbl.Position=UDim2.fromOffset(12,0); sLbl.BackgroundTransparency=1; sLbl.Text="Style"; sLbl.TextColor3=Color3.fromRGB(195,180,220); sLbl.Font=Enum.Font.GothamMedium; sLbl.TextSize=12; sLbl.TextXAlignment=Enum.TextXAlignment.Left
+	local sVal=Instance.new("TextLabel",styleRow); sVal.Size=UDim2.new(0.3,0,1,0); sVal.AnchorPoint=Vector2.new(0.5,0); sVal.Position=UDim2.new(0.6,0,0,0); sVal.BackgroundTransparency=1; sVal.Text=styles[styleIdx]; sVal.TextColor3=Color3.fromRGB(220,180,255); sVal.Font=Enum.Font.GothamBold; sVal.TextSize=12; sVal.TextXAlignment=Enum.TextXAlignment.Center
+	local sPrev=mkBtn(styleRow,"◀",Color3.fromRGB(40,28,70),26); sPrev.Size=UDim2.fromOffset(26,26); sPrev.Position=UDim2.new(1,-58,0.5,-13); sPrev.AutoButtonColor=false
+	local sNext=mkBtn(styleRow,"▶",Color3.fromRGB(40,28,70),26); sNext.Size=UDim2.fromOffset(26,26); sNext.Position=UDim2.new(1,-28,0.5,-13); sNext.AutoButtonColor=false
+	sPrev.MouseButton1Click:Connect(function() styleIdx=styleIdx>1 and styleIdx-1 or #styles; sVal.Text=styles[styleIdx]; CFG.notifStyle=styles[styleIdx] end)
+	sNext.MouseButton1Click:Connect(function() styleIdx=styleIdx<#styles and styleIdx+1 or 1; sVal.Text=styles[styleIdx]; CFG.notifStyle=styles[styleIdx] end)
+end
+
+
+-- Startup notification (loading screen removed)
+task.spawn(function()
+	task.wait(0.5)
+	showNotif({Color=Color3.fromRGB(80,30,180),Icon=ROBUX_ICON,Text="Biryukov Nuke Version Loaded!",Duration=4})
+end)
