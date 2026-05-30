@@ -1301,9 +1301,8 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 		end
 	end
 
-	-- ── 5. Fallback: search visible text labels for @username ──
-	if info.username == "Player" or info.username == "Donation" then
-		pcall(function()
+
+	if (info.username == "Player" or info.username == "Donation") and not itemFrame:GetAttribute("_forcedUsername") then		pcall(function()
 			-- Search the button/frame itself first
 			for _, d in pairs(itemFrame:GetDescendants()) do
 				if d:IsA("TextLabel") and d.Text and d.Visible then
@@ -1969,42 +1968,74 @@ local function hookBtn(btn)
 
 	ov.MouseButton1Click:Connect(function()
 		local cid = getButtonId(btn) or id
-		-- Force username from BOOTH CONTEXT — not random screen text
+
+		-- ============================================
+		-- BOOTH OWNER DETECTION (Please Donate style)
+		-- ============================================
 		local forcedUsername = nil
 		local forcedDisplayName = nil
 		local forcedUserId = nil
+		local forcedPrice = nil
 
-		-- Walk UP from the button to find the booth/player container
 		pcall(function()
+			-- Strategy 1: The button is inside an "ItemFrame" or booth frame
+			-- Walk UP and look for frames that contain booth owner info
 			local cur = btn
-			for _ = 1, 15 do
+			for _ = 1, 20 do
 				if not cur then break end
 
-				-- Check this ancestor for name labels (booth owner name is usually here)
-				for _, d in pairs(cur:GetChildren()) do
+				-- Check ALL descendants of this ancestor for booth owner patterns
+				for _, d in pairs(cur:GetDescendants()) do
 					if d:IsA("TextLabel") or d:IsA("TextButton") then
 						if d.Text and d.Visible then
-							-- Look for @username pattern
-							local m = d.Text:match("@([%w_]+)")
+							local text = d.Text
+
+							-- Pattern A: "@[username]" with specific booth context
+							-- Booth owner @username is usually near the top of booth, not in lists
+							local m = text:match("@([%w_]+)")
 							if m and #m >= 3 and m:lower() ~= "playername" then
-								forcedUsername = m
-							end
-							-- Look for display name (booth title, player name header, etc.)
-							if d.Name:lower():find("name") or d.Name:lower():find("title") or d.Name:lower():find("owner") or d.Name:lower():find("player") or d.Name:lower():find("booth") then
-								if d.Text and #d.Text > 0 and d.Text ~= "Donation" and not d.Text:find("@") then
-									forcedDisplayName = d.Text
+								-- Only accept if this label is NOT inside a scrolling list (player list)
+								local parentName = (d.Parent and d.Parent.Name or ""):lower()
+								local grandparentName = (d.Parent and d.Parent.Parent and d.Parent.Parent.Name or ""):lower()
+								if not parentName:find("scroll") and not grandparentName:find("scroll") 
+									and not parentName:find("list") and not grandparentName:find("list")
+									and not parentName:find("chat") and not grandparentName:find("chat")
+									and not parentName:find("feed") and not grandparentName:find("feed") then
+									forcedUsername = m
 								end
 							end
-							-- CreatorId attribute on this ancestor
-							local cid2 = d:GetAttribute("CreatorId")
-							if cid2 and cid2 > 0 then
-								forcedUserId = cid2
+
+							-- Pattern B: Display name above @username (booth title)
+							if not text:find("@") and text ~= "Donation" and #text > 0 and #text < 30 then
+								local parent = d.Parent
+								if parent then
+									for _, sibling in pairs(parent:GetChildren()) do
+										if sibling ~= d and (sibling:IsA("TextLabel") or sibling:IsA("TextButton")) then
+											if sibling.Text and sibling.Text:find("@") then
+												forcedDisplayName = text
+											end
+										end
+									end
+								end
+							end
+						end
+					end
+
+					-- Check for ImageLabel with headshot (booth owner avatar)
+					if d:IsA("ImageLabel") and d.Image and d.Image:find("rbxthumb") then
+						local imgParent = d.Parent
+						if imgParent then
+							for _, sibling in pairs(imgParent:GetChildren()) do
+								if sibling:IsA("TextLabel") and sibling.Text and sibling.Text:find("@") then
+									local m = sibling.Text:match("@([%w_]+)")
+									if m then forcedUsername = m end
+								end
 							end
 						end
 					end
 				end
 
-				-- Also check attributes on the ancestor itself
+				-- Check attributes on the ancestor frame itself
 				local attrCid = cur:GetAttribute("CreatorId")
 				if attrCid and attrCid > 0 then
 					forcedUserId = attrCid
@@ -2013,50 +2044,76 @@ local function hookBtn(btn)
 				if attrName and attrName ~= "" and attrName ~= "Donation" then
 					forcedUsername = attrName
 				end
+				local attrPrice = cur:GetAttribute("AssetPrice") or cur:GetAttribute("Price")
+				if attrPrice and tonumber(attrPrice) and tonumber(attrPrice) > 0 then
+					forcedPrice = tonumber(attrPrice)
+				end
 
-				-- Stop if we found both username and userId
+				-- Stop if we have what we need
 				if forcedUsername and forcedUserId then break end
-
 				cur = cur.Parent
+			end
+
+			-- Strategy 2: If still no username, look for booth-specific GUI patterns
+			if not forcedUsername then
+				for _, gui in pairs(playerGui:GetChildren()) do
+					if gui:IsA("ScreenGui") or gui:IsA("Frame") then
+						-- Look for booth UI patterns
+						for _, f in pairs(gui:GetDescendants()) do
+							if f:IsA("Frame") or f:IsA("ScrollingFrame") then
+								local fName = f.Name:lower()
+								-- Booth frames often have these names
+								if fName:find("booth") or fName:find("stand") or fName:find("shop") or fName:find("donation") then
+									-- Is our button inside this frame?
+									if f:IsAncestorOf(btn) or btn:IsDescendantOf(f) then
+										for _, d in pairs(f:GetDescendants()) do
+											if d:IsA("TextLabel") and d.Text then
+												local m = d.Text:match("@([%w_]+)")
+												if m and #m >= 3 then
+													forcedUsername = m
+												end
+												if not d.Text:find("@") and d.Text ~= "Donation" and #d.Text > 0 then
+													forcedDisplayName = d.Text
+												end
+											end
+										end
+									end
+								end
+							end
+						end
+					end
+				end
 			end
 		end)
 
-		-- Fallback: only use getUsernameCtx if booth walk found nothing
-		if not forcedUsername then
-			local u = getUsernameCtx(btn)
-			if u then forcedUsername = u end
-		end
+		-- ============================================
+		-- BUILD INFO
+		-- ============================================
+		local info = getInfo(btn, 0, cid)
 
-		local info = getInfo(btn, 0, cid)
-		local info = getInfo(btn, 0, cid)
 		if forcedUsername and forcedUsername ~= "" then
 			info.username = forcedUsername
 		end
 		if forcedDisplayName and forcedDisplayName ~= "" then
-			info.name = forcedDisplayName  -- Use booth owner's display name
+			info.name = forcedDisplayName
 		end
 		if forcedUserId and forcedUserId > 0 then
 			info.userId = forcedUserId
 		end
+		if forcedPrice and forcedPrice > 0 then
+			info.price = forcedPrice
+		end
 
-		-- Try to resolve userId from username for avatar (if still missing)
+		-- Resolve userId from username if still missing
 		if info.username and info.username ~= "Player" and (not info.userId or info.userId == 0) then
 			local ok, uid = pcall(function()
 				return Players:GetUserIdFromNameAsync(info.username)
 			end)
 			if ok and uid then info.userId = uid end
 		end
-		if info.assetId and CFG.purchasedItems[info.assetId] then
-			playSnd("Error", 0.8)
-			showNotif({
-				Color = Color3.fromRGB(255, 140, 0),
-				Icon = "rbxassetid://15047371063",
-				Text = "Already owned",
-				Duration = 3
-			})
-			return
-		end
-		activePrompt.open(info)  -- ← TO THIS
+
+		print("CLICKED: boothOwner=" .. tostring(info.username) .. " price=" .. tostring(info.price) .. " userId=" .. tostring(info.userId))
+		activePrompt.open(info)
 	end)
 end
 local function setupIF(f) if not f or CFG.processedFrames[f] then return end; CFG.processedFrames[f]=true; if f:IsA("TextButton")or f:IsA("ImageButton") then hookBtn(f) else for _,c in ipairs(f:GetDescendants()) do if (c:IsA("TextButton")or c:IsA("ImageButton")) and not c:FindFirstChild("__FD_Ov") then if getButtonId(c) then hookBtn(c) end end end end end
