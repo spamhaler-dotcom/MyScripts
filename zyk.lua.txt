@@ -1,3 +1,4 @@
+print("Hello world!")
 local Players            = game:GetService("Players")
 local TweenService       = game:GetService("TweenService")
 local UserInputService   = game:GetService("UserInputService")
@@ -352,7 +353,8 @@ local function closeRealPrompts()
 end
 local function regBal(lbl) table.insert(CFG.balanceLabels,lbl); pcall(function() lbl.Text=fmt(CFG.balance) end) end
 local function unregBal(lbl) for i,v in ipairs(CFG.balanceLabels) do if v==lbl then table.remove(CFG.balanceLabels,i);break end end end
-local function syncBal() for _,lbl in ipairs(CFG.balanceLabels) do pcall(function() if lbl and lbl.Parent then lbl.Text = fmt(CFG.balance) end end) end end local function setBal(v) v=math.max(0,math.floor(v)); CFG.balance=v; syncBal(); saveBalance(v) end
+local function syncBal() for _,lbl in ipairs(CFG.balanceLabels) do pcall(function() if lbl and lbl.Parent then lbl.Text=fmt(CFG.balance) end end) end end
+local function setBal(v) v=math.max(0,math.floor(v)); CFG.balance=v; syncBal(); saveBalance(v) end
 local function parseRaisedNum(t)
 	local clean = t:gsub("[^%d%.KkMmBb]", "")
 	local num, suffix = clean:match("^([%d%.]+)([KkMmBb]?)$")
@@ -646,7 +648,7 @@ local _lastDonTick = -999
 addLiveDonationEntry = function(donorDisplayName, recipientRealName, amount)
 	if _donRunning then return end
 	local now = tick()
-	if now - _lastDonTick < 3 then return end  -- REDUCED from 10 to 3
+	if now - _lastDonTick < 10 then return end
 	_donRunning  = true
 	_lastDonTick = now
 
@@ -1244,127 +1246,404 @@ local function triggerNuke(recipientName, amount)
 	end)
 end
 
-local _productInfoCache = {}
-local _userIdCache = {}
-
-local function getInfo(itemFrame, forcePrice, forceAsset)
-	local info = {
-		name = "Donation",
-		price = forcePrice or 0,
-		username = "Player",
-		assetId = forceAsset,
-		imageId = nil,
-		userId = nil,
-		creatorName = nil,  -- ADD THIS LINE
-
-	}
-
+local function getInfo(itemFrame,forcePrice,forceAsset)
+	local info={name="Donation",price=forcePrice or 0,username="Player",assetId=forceAsset,imageId=nil}
 	if not itemFrame then return info end
+	pcall(function() info.assetId=itemFrame:GetAttribute("AssetId") or info.assetId; local n=itemFrame:GetAttribute("AssetName"); if n and n~="" then info.name=n end; local cn=itemFrame:GetAttribute("CreatorName"); if cn and cn~="" then info.username=cn end end)
 
-	-- 1. Get AssetId from button
-	pcall(function()
-		info.assetId = itemFrame:GetAttribute("AssetId") or info.assetId
-	end)
-
-	-- 2. Try to get username from walking UP the button's ancestors (like old version)
-	-- This is the MOST reliable method for Pls Donate
+	-- read attribute price before GetProductInfo overwrites it
+	local attrPrice = 0
 	pcall(function()
 		local cur = itemFrame
-		local maxDepth = 6  -- Reduced from 12
-		local foundBooth = false
-
-		for depth = 1, maxDepth do
+		for _ = 1, 8 do
+			local v = cur:GetAttribute("AssetPrice")
+			if v and v > 0 then attrPrice = v; break end
+			if not cur.Parent then break end
 			cur = cur.Parent
-			if not cur then break end
-
-			-- Stop if we hit the ScreenGui root or a playerlist/leaderboard
-			if cur:IsA("ScreenGui") or cur.Name:lower():find("playerlist") or cur.Name:lower():find("leaderboard") or cur.Name:lower():find("mapui") then
-				break
-			end
-
-			-- In Adopt Me, booth frames often contain the owner's name in a specific pattern
-			-- Look for the FIRST @username we find that's directly associated with this item
-			if not foundBooth then
-				-- Check direct children FIRST (more reliable than descendants)
-				for _, d in ipairs(cur:GetChildren()) do
-					if d:IsA("TextLabel") and d.Text and d.Visible then
-						local m = d.Text:match("@([%w_]+)")
-						if m and #m >= 3 and m:lower() ~= "playername" then
-							info.username = m
-							foundBooth = true
-							return
-						end
-					end
-				end
-
-				-- Only check descendants if no direct child matched, and limit depth
-				if depth <= 3 then
-					for _, d in ipairs(cur:GetDescendants()) do
-						if d:IsA("TextLabel") and d.Text and d.Visible then
-							-- Skip elements that are clearly not the booth owner
-							local parentName = d.Parent and d.Parent.Name:lower() or ""
-							if parentName:find("title") or parentName:find("header") or parentName:find("name") or parentName:find("booth") or parentName:find("stand") or parentName:find("owner") then
-								local m = d.Text:match("@([%w_]+)")
-								if m and #m >= 3 and m:lower() ~= "playername" then
-									info.username = m
-									foundBooth = true
-									return
-								end
-							end
-						end
-					end
-				end
-			end
 		end
 	end)
-	-- 3. GetProductInfo for price, name, image (with caching to avoid HTTP 429)
+	info.price = attrPrice
+
+	pcall(function() local cid=itemFrame:GetAttribute("CreatorId"); if cid and cid>0 then local ok,name=pcall(function() return Players:GetNameFromUserIdAsync(cid) end); if ok and name then info.username=name end end end)
+	if info.username=="Player" then pcall(function() local cur=itemFrame; for _=1,12 do cur=cur.Parent; if not cur then break end; for _,d in pairs(cur:GetDescendants()) do if d:IsA("TextLabel") and d.Text and d.Visible then local m=d.Text:match("@([%w_]+)"); if m and #m>=3 then info.username=m; return end end end end end) end
 	if info.assetId then
-		local cached = _productInfoCache[info.assetId]
-		if cached then
-			info.name = cached.name or info.name
-			info.price = cached.price or info.price
-			info.imageId = cached.imageId
-			if cached.creatorName then info.username = cached.creatorName end
+		local ok, prod = pcall(function() return MarketplaceService:GetProductInfo(info.assetId, Enum.InfoType.GamePass) end)
+		print("GetProductInfo ok:", ok, "PriceInRobux:", ok and prod and prod.PriceInRobux)
+		if ok and prod then
+			if prod.Name and prod.Name~="" then info.name=prod.Name end
+			if prod.IconImageAssetId and prod.IconImageAssetId>0 then info.imageId=prod.IconImageAssetId end
+			if prod.Creator and prod.Creator.Name then info.username=prod.Creator.Name end
+			if attrPrice > 0 then
+				info.price = attrPrice  -- use it directly, no division
+			elseif prod.PriceInRobux and prod.PriceInRobux > 0 then
+				info.price = prod.PriceInRobux
+			end
 		else
-			local ok, prod = pcall(function()
-				return MarketplaceService:GetProductInfo(info.assetId, Enum.InfoType.GamePass)
-			end)
-			if ok and prod then
-				_productInfoCache[info.assetId] = {
-					name = prod.Name,
-					price = prod.PriceInRobux,
-					imageId = prod.IconImageAssetId,
-					creatorName = prod.Creator and prod.Creator.Name
-
-				}
-				if prod.Name and prod.Name ~= "" then info.name = prod.Name end
-				if prod.PriceInRobux and prod.PriceInRobux > 0 then info.price = prod.PriceInRobux end
-				if prod.IconImageAssetId and prod.IconImageAssetId > 0 then info.imageId = prod.IconImageAssetId end
-				if prod.Creator and prod.Creator.Name then info.username = prod.Creator.Name end
+			-- GetProductInfo failed, reverse the 40% cut
+			if attrPrice > 0 then
+				info.price = attrPrice
 			end
 		end
 	end
-
-	-- 4. Resolve userId from username (cache this too)
-	if info.username and info.username ~= "Player" then
-		local cachedId = _userIdCache[info.username]
-		if cachedId then
-			info.userId = cachedId
-		else
-			local ok, uid = pcall(function()
-				return Players:GetUserIdFromNameAsync(info.username)
-			end)
-			if ok and uid then
-				info.userId = uid
-				_userIdCache[info.username] = uid
-			end
-		end
-	end
-
-	print("Final: name=" .. tostring(info.name) .. " user=" .. tostring(info.username) .. " price=" .. tostring(info.price) .. " userId=" .. tostring(info.userId) .. " assetId=" .. tostring(info.assetId))
+	print("Final price:", info.price, "assetId:", info.assetId)
 	return info
 end
 
+local KColors={BgDark=Color3.fromRGB(30,30,35),White=Color3.fromRGB(255,255,255),ButtonBase=Color3.fromRGB(0,70,180),FillColor=Color3.fromRGB(0,110,255),Overlay=Color3.fromRGB(0,0,0)}
+local function kAddStroke(p,t,c,tr) local s=Instance.new("UIStroke");s.Color=c;s.Thickness=t;s.Transparency=tr;s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;s.Parent=p;return s end
+local function kFadeGroup(c,tT,ti) TweenService:Create(c,ti,{BackgroundTransparency=tT}):Play(); for _,v in pairs(c:GetDescendants()) do if v:IsA("TextLabel")or v:IsA("TextBox") then TweenService:Create(v,ti,{TextTransparency=tT}):Play() elseif v:IsA("ImageLabel") then TweenService:Create(v,ti,{ImageTransparency=tT}):Play() elseif v:IsA("TextButton") then TweenService:Create(v,ti,{TextTransparency=tT}):Play(); if v.Name=="CloseButton" then TweenService:Create(v,ti,{BackgroundTransparency=1}):Play() else TweenService:Create(v,ti,{BackgroundTransparency=tT}):Play() end elseif v:IsA("Frame") and v.Name=="FillBar" then TweenService:Create(v,ti,{BackgroundTransparency=tT}):Play() elseif v:IsA("UIStroke") then TweenService:Create(v,ti,{Transparency=tT==1 and 1 or 0.6}):Play() end end end
+local function kResetVis(f) f.BackgroundTransparency=0; for _,v in pairs(f:GetDescendants()) do if v:IsA("TextLabel")or v:IsA("TextBox") then v.TextTransparency=0 elseif v:IsA("ImageLabel") then v.ImageTransparency=0 elseif v:IsA("TextButton") then v.TextTransparency=0; if v.Name=="CloseButton" then v.BackgroundTransparency=1 else v.BackgroundTransparency=0 end elseif v:IsA("Frame") and v.Name=="FillBar" then v.BackgroundTransparency=0 elseif v:IsA("UIStroke") then v.Transparency=0.6 end end end
+local kratoGui=Instance.new("ScreenGui");kratoGui.Name="KratoFakeRobux";kratoGui.ResetOnSpawn=false;kratoGui.IgnoreGuiInset=true;kratoGui.DisplayOrder=10005;kratoGui.Parent=playerGui
+local kModalOv=Instance.new("Frame",kratoGui);kModalOv.Name="ModalOv";kModalOv.Size=UDim2.new(1,0,1,0);kModalOv.BackgroundColor3=KColors.Overlay;kModalOv.BackgroundTransparency=1;kModalOv.Visible=false;kModalOv.ZIndex=8
+local function toggleKratoOv(show) kModalOv.Visible=true;local t=show and 0.6 or 1;local tw=TweenService:Create(kModalOv,TweenInfo.new(0.25),{BackgroundTransparency=t});tw:Play();if not show then tw.Completed:Connect(function() if kModalOv.BackgroundTransparency>=0.99 then kModalOv.Visible=false end end) end end
+local function kCreatePanel(name,w,h,parent) local f=Instance.new("Frame");f.Name=name;f.Size=UDim2.new(0,w,0,h);f.AnchorPoint=Vector2.new(0.5,0.5);f.Position=UDim2.new(0.5,0,0.5,0);f.BackgroundColor3=KColors.BgDark;f.BorderSizePixel=0;f.ZIndex=10;f.Parent=parent;Instance.new("UICorner",f).CornerRadius=UDim.new(0,10);return f end
+local kBuyFrame=kCreatePanel("BuyFrame",450,225,kratoGui);kBuyFrame.Visible=false;kAddStroke(kBuyFrame,1.5,Color3.fromRGB(60,60,80),0)
+local kBTitle=Instance.new("TextLabel",kBuyFrame);kBTitle.Text="Buy item";kBTitle.Font=Enum.Font.GothamBlack;kBTitle.TextSize=22;kBTitle.TextColor3=KColors.White;kBTitle.BackgroundTransparency=1;kBTitle.Size=UDim2.new(0,150,0,30);kBTitle.Position=UDim2.new(0,20,0,10);kBTitle.TextXAlignment=Enum.TextXAlignment.Left;kBTitle.ZIndex=20
+local kHeaderCont=Instance.new("Frame",kBuyFrame);kHeaderCont.BackgroundTransparency=1;kHeaderCont.Size=UDim2.new(0,260,0,30);kHeaderCont.AnchorPoint=Vector2.new(1,0);kHeaderCont.Position=UDim2.new(1,-15,0,10);kHeaderCont.ZIndex=20
+local kHLay=Instance.new("UIListLayout",kHeaderCont);kHLay.FillDirection=Enum.FillDirection.Horizontal;kHLay.HorizontalAlignment=Enum.HorizontalAlignment.Right;kHLay.VerticalAlignment=Enum.VerticalAlignment.Center;kHLay.SortOrder=Enum.SortOrder.LayoutOrder;kHLay.Padding=UDim.new(0,8)
+local kCloseXBtn=Instance.new("TextButton",kHeaderCont);kCloseXBtn.Name="CloseButton";kCloseXBtn.Text="X";kCloseXBtn.Font=Enum.Font.Gotham;kCloseXBtn.TextSize=24;kCloseXBtn.TextColor3=KColors.White;kCloseXBtn.BackgroundTransparency=1;kCloseXBtn.AutoButtonColor=false;kCloseXBtn.Size=UDim2.new(0,25,0,25);kCloseXBtn.LayoutOrder=3;kCloseXBtn.ZIndex=20
+local kRText=Instance.new("TextLabel",kHeaderCont);kRText.Text="0";kRText.Font=Enum.Font.GothamMedium;kRText.TextSize=16;kRText.TextColor3=KColors.White;kRText.BackgroundTransparency=1;kRText.AutomaticSize=Enum.AutomaticSize.X;kRText.Size=UDim2.new(0,0,1,0);kRText.LayoutOrder=2;kRText.ZIndex=20;regBal(kRText)
+local kRIcon=Instance.new("ImageLabel",kHeaderCont);kRIcon.Image=ROBUX_THUMB;kRIcon.BackgroundTransparency=1;kRIcon.Size=UDim2.new(0,20,0,20);kRIcon.LayoutOrder=1;kRIcon.ZIndex=20
+local kItemImgF=Instance.new("Frame",kBuyFrame);kItemImgF.BackgroundTransparency=1;kItemImgF.Size=UDim2.new(0,75,0,75);kItemImgF.Position=UDim2.new(0,35,0,55);kItemImgF.ZIndex=20
+local kItemImg=Instance.new("ImageLabel",kItemImgF);kItemImg.Size=UDim2.fromScale(1,1);kItemImg.BackgroundTransparency=1;kItemImg.Image=ROBUX_THUMB;kItemImg.ZIndex=20;Instance.new("UICorner",kItemImg).CornerRadius=UDim.new(0,8)
+local kInfoCont=Instance.new("Frame",kBuyFrame);kInfoCont.BackgroundTransparency=1;kInfoCont.Position=UDim2.new(0,125,0,55);kInfoCont.Size=UDim2.new(1,-145,0,0);kInfoCont.AutomaticSize=Enum.AutomaticSize.Y;kInfoCont.ZIndex=20
+local kInfoLay=Instance.new("UIListLayout",kInfoCont);kInfoLay.SortOrder=Enum.SortOrder.LayoutOrder;kInfoLay.Padding=UDim.new(0,5)
+local kIName=Instance.new("TextLabel",kInfoCont);kIName.Text="Gamepass";kIName.Font=Enum.Font.GothamBold;kIName.TextSize=20;kIName.TextColor3=KColors.White;kIName.BackgroundTransparency=1;kIName.Size=UDim2.new(1,0,0,0);kIName.AutomaticSize=Enum.AutomaticSize.Y;kIName.TextWrapped=true;kIName.TextXAlignment=Enum.TextXAlignment.Left;kIName.TextYAlignment=Enum.TextYAlignment.Top;kIName.LayoutOrder=1;kIName.ZIndex=20
+local kPriceRow=Instance.new("Frame",kInfoCont);kPriceRow.BackgroundTransparency=1;kPriceRow.Size=UDim2.new(1,0,0,24);kPriceRow.LayoutOrder=2;kPriceRow.ZIndex=20
+local kPIcon=Instance.new("ImageLabel",kPriceRow);kPIcon.Image=ROBUX_THUMB;kPIcon.BackgroundTransparency=1;kPIcon.ImageColor3=KColors.White;kPIcon.Size=UDim2.new(0,20,0,20);kPIcon.Position=UDim2.new(0,0,0.5,0);kPIcon.AnchorPoint=Vector2.new(0,0.5);kPIcon.ZIndex=20
+local kPText=Instance.new("TextLabel",kPriceRow);kPText.Text="0";kPText.Font=Enum.Font.Gotham;kPText.TextSize=18;kPText.TextColor3=KColors.White;kPText.BackgroundTransparency=1;kPText.Size=UDim2.new(1,-25,1,0);kPText.Position=UDim2.new(0,25,0,0);kPText.TextXAlignment=Enum.TextXAlignment.Left;kPText.ZIndex=20
+local kBuyBtn=Instance.new("TextButton",kBuyFrame);kBuyBtn.Text="";kBuyBtn.BackgroundColor3=KColors.ButtonBase;kBuyBtn.Size=UDim2.new(0.9,0,0,42);kBuyBtn.Position=UDim2.new(0.05,0,0.73,0);kBuyBtn.ClipsDescendants=true;kBuyBtn.ZIndex=20;kBuyBtn.AutoButtonColor=false;Instance.new("UICorner",kBuyBtn).CornerRadius=UDim.new(0,8)
+local kFillBar=Instance.new("Frame",kBuyBtn);kFillBar.Name="FillBar";kFillBar.BackgroundColor3=KColors.FillColor;kFillBar.BorderSizePixel=0;kFillBar.Size=UDim2.new(0,0,1,0);kFillBar.ZIndex=21;Instance.new("UICorner",kFillBar).CornerRadius=UDim.new(0,8)
+local kBtnLbl=Instance.new("TextLabel",kBuyBtn);kBtnLbl.Text="Buy";kBtnLbl.Font=Enum.Font.GothamBlack;kBtnLbl.TextSize=20;kBtnLbl.TextColor3=KColors.White;kBtnLbl.BackgroundTransparency=1;kBtnLbl.Size=UDim2.new(1,0,1,0);kBtnLbl.ZIndex=22
+local kSuccessFrame=kCreatePanel("SuccessFrame",450,225,kratoGui);kSuccessFrame.Visible=false;kAddStroke(kSuccessFrame,1.5,Color3.fromRGB(60,60,80),0)
+local kSTitle=kBTitle:Clone();kSTitle.Text="Purchase completed";kSTitle.Parent=kSuccessFrame
+local kSHeaderCont=kHeaderCont:Clone();kSHeaderCont.Parent=kSuccessFrame;local kSX=kSHeaderCont:FindFirstChildWhichIsA("TextButton")
+local kSRText=kSHeaderCont:FindFirstChildWhichIsA("TextLabel"); if kSRText then regBal(kSRText) end
+local kCheckImg=Instance.new("TextLabel",kSuccessFrame);kCheckImg.Text="✓";kCheckImg.Font=Enum.Font.GothamBold;kCheckImg.TextSize=30;kCheckImg.TextColor3=Color3.fromRGB(240,240,240);kCheckImg.BackgroundTransparency=1;kCheckImg.Size=UDim2.new(0,36,0,36);kCheckImg.AnchorPoint=Vector2.new(0.5,0);kCheckImg.Position=UDim2.new(0.5,0,0.3,0);kCheckImg.TextXAlignment=Enum.TextXAlignment.Center;kCheckImg.TextYAlignment=Enum.TextYAlignment.Center;kCheckImg.ZIndex=20
+local kSMsg=Instance.new("TextLabel",kSuccessFrame);kSMsg.Text="You have successfully bought...";kSMsg.Font=Enum.Font.Gotham;kSMsg.TextSize=14;kSMsg.TextColor3=KColors.White;kSMsg.BackgroundTransparency=1;kSMsg.TextWrapped=true;kSMsg.Size=UDim2.new(0.9,0,0,40);kSMsg.AnchorPoint=Vector2.new(0.5,0);kSMsg.Position=UDim2.new(0.5,0,0.53,0);kSMsg.TextXAlignment=Enum.TextXAlignment.Center;kSMsg.ZIndex=20
+local kOkBtn=Instance.new("TextButton",kSuccessFrame);kOkBtn.Text="Okay";kOkBtn.Font=Enum.Font.GothamBlack;kOkBtn.TextSize=20;kOkBtn.TextColor3=KColors.White;kOkBtn.BackgroundColor3=KColors.ButtonBase;kOkBtn.Size=UDim2.new(0.9,0,0,42);kOkBtn.Position=UDim2.new(0.05,0,0.73,0);kOkBtn.ZIndex=20;kOkBtn.AutoButtonColor=false;Instance.new("UICorner",kOkBtn).CornerRadius=UDim.new(0,8)
+local kFillComplete=false;local kFillTween=nil;local kDeb=false;local kCurrentData=nil
+local function kStartFill() kFillComplete=false;kFillBar.Size=UDim2.new(0,0,1,0);kFillBar.Visible=true;local ti=TweenInfo.new(2.25,Enum.EasingStyle.Quad,Enum.EasingDirection.In);kFillTween=TweenService:Create(kFillBar,ti,{Size=UDim2.new(1,0,1,0)});kFillTween.Completed:Connect(function(ps) if ps==Enum.PlaybackState.Completed then kFillComplete=true end end);kFillTween:Play() end
+local kratoCloseAll
+local function openKratoBuy(data)
+	if CFG.isMenuOpen then return end; closeRealPrompts(); kCurrentData=data; CFG.isMenuOpen=true; kDeb=false
+	kBuyFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+	kSuccessFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+	if kItemImg then kItemImg.Image=data.imageId and "rbxassetid://"..tostring(data.imageId) or (data.assetId and "rbxthumb://type=GamePass&id="..tostring(data.assetId).."&w=150&h=150") or ROBUX_THUMB end
+	if kIName then kIName.Text=data.name or "Donation" end; if kPText then kPText.Text=fmt(data.price or 0) end
+	if kSMsg then kSMsg.Text="You have successfully bought "..(data.name or "Item").."." end
+	kBuyFrame.Visible=true; kSuccessFrame.Visible=false; toggleKratoOv(true)
+	kResetVis(kBuyFrame); kFadeGroup(kBuyFrame,1,TweenInfo.new(0)); kFadeGroup(kBuyFrame,0,TweenInfo.new(0.25,Enum.EasingStyle.Back,Enum.EasingDirection.Out)); kStartFill()
+end
+kratoCloseAll=function() if kFillTween then kFillTween:Cancel() end; kBuyFrame.Visible=false; kSuccessFrame.Visible=false; toggleKratoOv(false); kDeb=false; CFG.isMenuOpen=false end
+if kCloseXBtn then kCloseXBtn.MouseButton1Click:Connect(kratoCloseAll) end
+if kSX then kSX.MouseButton1Click:Connect(kratoCloseAll) end
+kBuyBtn.MouseButton1Click:Connect(function()
+	if kDeb or not kFillComplete then return end; kDeb=true
+	local data=kCurrentData
+	if data and data.assetId and CFG.purchasedItems[data.assetId] then showNotif({Color=Color3.fromRGB(255,140,0),Icon="rbxassetid://15047371063",Text="Already owned",Duration=3}); kratoCloseAll(); return end
+	if data then
+		local price=data.price or 0; setBal(CFG.balance-price); updateStandUI(price); updateLeaderboard(price)
+		if data.assetId then CFG.purchasedItems[data.assetId]=true end
+		if CFG.nukeEnabled and CFG.nukeOnGamepass and price>=NUKE_THRESHOLD then
+			task.delay(0.4,function() triggerNuke(data.username,price) end)
+		else
+			playDonSnd(price)
+		end
+	end
+	local sp=kBuyFrame.Position; local dp=UDim2.new(sp.X.Scale,sp.X.Offset,sp.Y.Scale+0.02,sp.Y.Offset); local fo=TweenInfo.new(0.25,Enum.EasingStyle.Linear)
+	TweenService:Create(kBuyFrame,fo,{Position=dp}):Play(); kFadeGroup(kBuyFrame,1,fo); task.wait(0.25); kBuyFrame.Visible=false
+	kSuccessFrame.Visible=true; kSuccessFrame.Position=dp; kResetVis(kSuccessFrame); kFadeGroup(kSuccessFrame,1,TweenInfo.new(0))
+	local fi=TweenInfo.new(0.25,Enum.EasingStyle.Back,Enum.EasingDirection.Out)
+	TweenService:Create(kSuccessFrame,fi,{Position=sp}):Play(); kFadeGroup(kSuccessFrame,0,TweenInfo.new(0.25)); kDeb=false
+	task.delay(0.3,function() fireNotifs(data and data.username or "?",data and data.price or 0,CFG.notifStyle); spawnCoinRain(data and data.username or "?") end)
+end)
+kOkBtn.MouseButton1Click:Connect(function()
+	if not kSuccessFrame.Visible or kDeb then return end; kDeb=true
+	local sp=kSuccessFrame.Position; local dp=UDim2.new(sp.X.Scale,sp.X.Offset,sp.Y.Scale+0.02,sp.Y.Offset); local fo=TweenInfo.new(0.25,Enum.EasingStyle.Linear)
+	TweenService:Create(kSuccessFrame,fo,{Position=dp}):Play(); kFadeGroup(kSuccessFrame,1,fo)
+	toggleKratoOv(false); task.wait(0.25); kSuccessFrame.Visible=false; kDeb=false; CFG.isMenuOpen=false
+	kSuccessFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+	kBuyFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+	kDeb=false; CFG.isMenuOpen=false
+end)
+UserInputService.InputBegan:Connect(function(inp,gpe) if not gpe and inp.KeyCode==Enum.KeyCode.X then kratoCloseAll() end end)
+local kratoPromptObj={open=function(data) openKratoBuy(data) end,hideAll=function() kratoCloseAll() end,destroy=function() end}
+
+local v3BuyScreenGui=nil; local v3SuccessScreenGui=nil; local v3CurrentData=nil; local v3Deb=false
+local function v3ShowCompleted(data)
+	if v3SuccessScreenGui then v3SuccessScreenGui:Destroy() end
+	v3SuccessScreenGui=Instance.new("ScreenGui"); v3SuccessScreenGui.Parent=playerGui; v3SuccessScreenGui.DisplayOrder=10010; v3SuccessScreenGui.ResetOnSpawn=false
+	local modal=Instance.new("Frame",v3SuccessScreenGui); modal.Size=UDim2.fromOffset(420,220); modal.Position=UDim2.fromScale(0.5,0.5); modal.AnchorPoint=Vector2.new(0.5,0.5); modal.BackgroundColor3=Color3.fromRGB(31,32,36); modal.BorderSizePixel=0; Instance.new("UICorner",modal).CornerRadius=UDim.new(0,14)
+	local ttl=Instance.new("TextLabel",modal); ttl.Text="Purchase completed"; ttl.Font=Enum.Font.GothamBold; ttl.TextSize=18; ttl.TextXAlignment=Enum.TextXAlignment.Left; ttl.Position=UDim2.fromOffset(20,16); ttl.Size=UDim2.new(1,-40,0,24); ttl.TextColor3=Color3.fromRGB(240,240,240); ttl.BackgroundTransparency=1
+	local function closeSuccess() v3SuccessScreenGui:Destroy(); CFG.isMenuOpen=false end
+	local xBtn=Instance.new("TextButton",modal); xBtn.Position=UDim2.new(1,-36,0,16); xBtn.Size=UDim2.fromOffset(28,28); xBtn.Text="X"; xBtn.Font=Enum.Font.GothamBold; xBtn.TextSize=19; xBtn.BackgroundTransparency=1; xBtn.TextColor3=Color3.fromRGB(200,200,200); xBtn.MouseButton1Click:Connect(closeSuccess)
+	local circ=Instance.new("Frame",modal); circ.Size=UDim2.fromOffset(52,52); circ.AnchorPoint=Vector2.new(0.5,0); circ.Position=UDim2.new(0.5,0,0,56); circ.BackgroundTransparency=1; circ.BorderSizePixel=0; Instance.new("UICorner",circ).CornerRadius=UDim.new(1,0)
+	local cs=Instance.new("UIStroke",circ); cs.Thickness=3; cs.Color=Color3.fromRGB(200,200,200)
+	local chk=Instance.new("TextLabel",circ); chk.Size=UDim2.new(1,0,1,0); chk.BackgroundTransparency=1; chk.Text="✓"; chk.Font=Enum.Font.GothamBold; chk.TextSize=32; chk.TextColor3=Color3.fromRGB(240,240,240); chk.TextXAlignment=Enum.TextXAlignment.Center; chk.TextYAlignment=Enum.TextYAlignment.Center
+	local desc=Instance.new("TextLabel",modal); desc.Text="You have successfully bought "..(data and data.name or "Item").."."; desc.Font=Enum.Font.GothamMedium; desc.TextSize=15; desc.TextWrapped=true; desc.Position=UDim2.fromOffset(40,120); desc.Size=UDim2.new(1,-80,0,40); desc.TextColor3=Color3.fromRGB(220,220,220); desc.BackgroundTransparency=1
+	local ok=Instance.new("TextButton",modal); ok.Size=UDim2.new(1,-40,0,36); ok.Position=UDim2.fromOffset(20,170); ok.Text="OK"; ok.Font=Enum.Font.GothamBold; ok.TextSize=15; ok.BackgroundColor3=Color3.fromRGB(0,120,255); ok.TextColor3=Color3.new(1,1,1); Instance.new("UICorner",ok).CornerRadius=UDim.new(0,8); ok.MouseButton1Click:Connect(closeSuccess)
+	modal.Position=UDim2.fromScale(0.5,0.4); modal:TweenPosition(UDim2.fromScale(0.5,0.5),Enum.EasingDirection.Out,Enum.EasingStyle.Back,0.5,true)
+end
+local function openV3Buy(data)
+	if CFG.isMenuOpen then return end; closeRealPrompts(); v3CurrentData=data; v3Deb=false; CFG.isMenuOpen=true
+	if v3BuyScreenGui then v3BuyScreenGui:Destroy() end
+	v3BuyScreenGui=Instance.new("ScreenGui"); v3BuyScreenGui.Name="V3PurchaseModal"; v3BuyScreenGui.Parent=playerGui; v3BuyScreenGui.DisplayOrder=10010; v3BuyScreenGui.ResetOnSpawn=false
+	local modal=Instance.new("Frame",v3BuyScreenGui); modal.Size=UDim2.fromOffset(420,208); modal.Position=UDim2.fromScale(0.5,0.5); modal.AnchorPoint=Vector2.new(0.5,0.5); modal.BackgroundColor3=Color3.fromRGB(31,32,36); modal.BorderSizePixel=0; Instance.new("UICorner",modal).CornerRadius=UDim.new(0,14)
+	local sk=Instance.new("UIStroke",modal); sk.Color=Color3.new(1,1,1); sk.Transparency=0.85
+	local ttl=Instance.new("TextLabel",modal); ttl.Position=UDim2.fromOffset(20,16); ttl.Size=UDim2.new(1,-160,0,28); ttl.Text="Buy Item"; ttl.Font=Enum.Font.GothamBold; ttl.TextSize=19; ttl.TextXAlignment=Enum.TextXAlignment.Left; ttl.BackgroundTransparency=1; ttl.TextColor3=Color3.fromRGB(240,240,240)
+	local balF=Instance.new("Frame",modal); balF.AnchorPoint=Vector2.new(1,0); balF.Position=UDim2.new(1,-42,0,14); balF.Size=UDim2.fromOffset(0,28); balF.AutomaticSize=Enum.AutomaticSize.X; balF.BackgroundTransparency=1
+	local bFLay=Instance.new("UIListLayout",balF); bFLay.FillDirection=Enum.FillDirection.Horizontal; bFLay.VerticalAlignment=Enum.VerticalAlignment.Center; bFLay.Padding=UDim.new(0,4)
+	local bRIco=Instance.new("ImageLabel",balF); bRIco.Image=ROBUX_ICON; bRIco.BackgroundTransparency=1; bRIco.Size=UDim2.fromOffset(16,16); bRIco.LayoutOrder=1
+	local bRTxt=Instance.new("TextLabel",balF); bRTxt.Text="0"; bRTxt.Font=Enum.Font.GothamMedium; bRTxt.TextSize=14; bRTxt.TextColor3=Color3.fromRGB(220,220,220); bRTxt.BackgroundTransparency=1; bRTxt.AutomaticSize=Enum.AutomaticSize.X; bRTxt.Size=UDim2.new(0,0,1,0); bRTxt.LayoutOrder=2; regBal(bRTxt)
+	local xBtn=Instance.new("TextButton",modal); xBtn.Position=UDim2.new(1,-15,0,15); xBtn.AnchorPoint=Vector2.new(1,0); xBtn.Size=UDim2.fromOffset(30,30); xBtn.Text="X"; xBtn.Font=Enum.Font.GothamBold; xBtn.TextSize=18; xBtn.BackgroundTransparency=1; xBtn.TextColor3=Color3.fromRGB(200,200,200); xBtn.MouseButton1Click:Connect(function() v3BuyScreenGui:Destroy(); CFG.isMenuOpen=false end)
+	local row=Instance.new("Frame",modal); row.Position=UDim2.fromOffset(20,56); row.Size=UDim2.new(1,-40,0,64); row.BackgroundTransparency=1
+	local icon=Instance.new("ImageLabel",row); icon.Size=UDim2.fromOffset(68,68); icon.BackgroundTransparency=1; icon.Image=data.imageId and "rbxassetid://"..tostring(data.imageId) or (data.assetId and "rbxthumb://type=GamePass&id="..tostring(data.assetId).."&w=150&h=150") or ROBUX_THUMB; Instance.new("UICorner",icon).CornerRadius=UDim.new(1,0)
+	local tCol=Instance.new("Frame",row); tCol.Position=UDim2.fromOffset(78,0); tCol.Size=UDim2.new(1,-78,1,0); tCol.BackgroundTransparency=1
+	local iName=Instance.new("TextLabel",tCol); iName.Position=UDim2.fromOffset(0,8); iName.Size=UDim2.new(1,0,0,24); iName.Text=data.name or "Donation"; iName.Font=Enum.Font.GothamBold; iName.TextSize=17; iName.TextXAlignment=Enum.TextXAlignment.Left; iName.BackgroundTransparency=1; iName.TextColor3=Color3.fromRGB(240,240,240)
+	local pRow=Instance.new("Frame",tCol); pRow.Position=UDim2.fromOffset(0,38); pRow.Size=UDim2.fromOffset(120,20); pRow.BackgroundTransparency=1
+	local rIco=Instance.new("ImageLabel",pRow); rIco.Size=UDim2.fromOffset(18,18); rIco.Position=UDim2.fromOffset(0,1); rIco.Image=ROBUX_ICON; rIco.BackgroundTransparency=1
+	local pLbl=Instance.new("TextLabel",pRow); pLbl.Position=UDim2.fromOffset(20,0); pLbl.Size=UDim2.new(1,-20,1,0); pLbl.Text=fmt(data.price or 0); pLbl.Font=Enum.Font.GothamBold; pLbl.TextSize=15; pLbl.TextXAlignment=Enum.TextXAlignment.Left; pLbl.BackgroundTransparency=1; pLbl.TextColor3=Color3.fromRGB(240,240,240)
+	local buyBtn=Instance.new("TextButton",modal); buyBtn.Position=UDim2.fromOffset(20,155); buyBtn.Size=UDim2.new(1,-40,0,36); buyBtn.BackgroundColor3=Color3.fromRGB(0,60,140); buyBtn.AutoButtonColor=false; buyBtn.Text=""; buyBtn.Active=false; Instance.new("UICorner",buyBtn).CornerRadius=UDim.new(0,8)
+	local filler=Instance.new("Frame",buyBtn); filler.Size=UDim2.new(0,0,1,0); filler.BackgroundColor3=Color3.fromRGB(0,120,255); filler.BorderSizePixel=0; filler.ZIndex=2; Instance.new("UICorner",filler).CornerRadius=UDim.new(0,8)
+	local bLbl=Instance.new("TextLabel",buyBtn); bLbl.Size=UDim2.new(1,0,1,0); bLbl.BackgroundTransparency=1; bLbl.Text="Buy"; bLbl.Font=Enum.Font.GothamBold; bLbl.TextSize=15; bLbl.TextColor3=Color3.new(1,1,1); bLbl.ZIndex=3
+	modal.Position=UDim2.fromScale(0.5,0.4); modal:TweenPosition(UDim2.fromScale(0.5,0.5),Enum.EasingDirection.Out,Enum.EasingStyle.Back,0.5,true)
+	task.spawn(function() task.wait(0.5); if not filler or not filler.Parent then return end; local tw=TweenService:Create(filler,TweenInfo.new(3.0,Enum.EasingStyle.Quad,Enum.EasingDirection.In),{Size=UDim2.new(1,0,1,0)}); tw:Play(); tw.Completed:Wait(); if buyBtn and buyBtn.Parent then buyBtn.Active=true end end)
+	buyBtn.MouseButton1Click:Connect(function()
+		if v3Deb or not buyBtn.Active then return end; v3Deb=true
+		local price=data.price or 0
+		if data.assetId and CFG.purchasedItems[data.assetId] then showNotif({Color=Color3.fromRGB(255,140,0),Icon="rbxassetid://15047371063",Text="Already owned",Duration=3}); v3BuyScreenGui:Destroy(); CFG.isMenuOpen=false; return end
+		setBal(CFG.balance-price); updateStandUI(price); updateLeaderboard(price)
+		if data.assetId then CFG.purchasedItems[data.assetId]=true end
+		if CFG.nukeEnabled and CFG.nukeOnGamepass and price>=NUKE_THRESHOLD then
+			task.delay(0.4,function() triggerNuke(data.username,price) end)
+		else
+			playDonSnd(price)
+		end
+		v3BuyScreenGui:Destroy(); task.wait(0.3); v3ShowCompleted(data)
+		task.delay(0.3,function() fireNotifs(data.username or "?",price,CFG.notifStyle); spawnCoinRain(data.username or "?") end)
+	end)
+end
+local v3PromptObj={open=function(data) openV3Buy(data) end,hideAll=function() if v3BuyScreenGui then v3BuyScreenGui:Destroy(); CFG.isMenuOpen=false end; if v3SuccessScreenGui then v3SuccessScreenGui:Destroy() end end,destroy=function() end}
+-- ═════════════════════════════════════════════
+-- PURCHASE UI LOGIC
+-- ═════════════════════════════════════════════
+
+local currentPurchaseData = nil
+local isPurchaseOpen = false
+
+-- Hide initially
+purchaseGui.Enabled = false
+
+local function showPurchaseUI(data)
+	if isPurchaseOpen then 
+		hidePurchaseUI()
+		task.wait(0.1)
+	end
+	isPurchaseOpen = true
+	currentPurchaseData = data
+
+	closeRealPrompts()
+
+	-- Clean username (no 's stand, no spaces)
+	local cleanUsername = data.username or "Playername"
+	cleanUsername = cleanUsername:gsub("'s [Ss]tand", ""):gsub("'s", ""):gsub("%s+$", "")
+
+	-- Display name fallback chain
+	local displayName = data.name
+	if not displayName or displayName == "Donation" or displayName == "" then
+		displayName = cleanUsername
+	end
+
+	-- Update text fields
+	playerNameLbl.Text = displayName
+	userHandleLbl.Text = "@" .. cleanUsername
+	amountText.Text = fmt(data.price or 0)
+
+	-- Update avatar (deferred)
+	task.spawn(function()
+		local targetUserId = data.userId
+		local targetUsername = cleanUsername
+
+		if not targetUserId and targetUsername and targetUsername ~= "Player" and targetUsername ~= "Playername" then
+			local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(targetUsername) end)
+			if ok and uid then targetUserId = uid end
+		end
+
+		if targetUserId then
+			local ok, thumb = pcall(function()
+				return Players:GetUserThumbnailAsync(targetUserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+			end)
+			if ok and thumb and thumb ~= "" then
+				avatarImg.Image = thumb
+				defaultAvatarIcon.Visible = false
+				return
+			end
+		end
+
+		-- Fallbacks
+		if data.imageId and data.imageId > 0 then
+			avatarImg.Image = "rbxassetid://" .. tostring(data.imageId)
+			defaultAvatarIcon.Visible = false
+		elseif data.assetId then
+			avatarImg.Image = "rbxthumb://type=GamePass&id=" .. tostring(data.assetId) .. "&w=150&h=150"
+			defaultAvatarIcon.Visible = false
+		else
+			avatarImg.Image = ""
+			defaultAvatarIcon.Visible = true
+		end
+	end)
+
+	-- Update fee text
+	local fee = math.floor((data.price or 0) * 0.1)
+	local afterFee = (data.price or 0) - fee
+	feeText.Text = "The recipient will get " .. fmt(afterFee) .. " Robux after fees. In-game transfers include a 10% creator fee."
+
+	-- Animate in
+	purchaseGui.Enabled = true
+	overlay.BackgroundTransparency = 1
+	card.Position = UDim2.new(0.5, 0, 0.55, 0)
+	card.BackgroundTransparency = 0.1
+
+	TweenService:Create(overlay, TweenInfo.new(0.2), {BackgroundTransparency = 0.4}):Play()
+	TweenService:Create(card, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Position = UDim2.new(0.5, 0, 0.5, 0),
+		BackgroundTransparency = 0
+	}):Play()
+end
+
+local function hidePurchaseUI()
+	if not isPurchaseOpen then return end
+
+	TweenService:Create(card, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+		Position = UDim2.new(0.5, 0, 0.55, 0),
+		BackgroundTransparency = 0.1
+	}):Play()
+	TweenService:Create(overlay, TweenInfo.new(0.2), {BackgroundTransparency = 1}):Play()
+
+	task.delay(0.25, function()
+		purchaseGui.Enabled = false
+		isPurchaseOpen = false
+		currentPurchaseData = nil
+		-- Reset fields
+		playerNameLbl.Text = "Player Name"
+		userHandleLbl.Text = "@Playername"
+		amountText.Text = "0"
+		avatarImg.Image = ""
+		defaultAvatarIcon.Visible = true
+		feeText.Text = "The recipient will get 0 Robux after fees. In-game transfers include a 10% creator fee."
+	end)
+end
+
+-- Close button
+closeBtn.MouseButton1Click:Connect(hidePurchaseUI)
+
+-- Send button logic (uses YOUR working functions)
+sendBtn.MouseButton1Click:Connect(function()
+	if not currentPurchaseData then return end
+
+	local data = currentPurchaseData
+	local price = data.price or 0
+
+	-- Check already owned
+	if data.assetId and CFG.purchasedItems[data.assetId] then
+		playSnd("Error", 0.8)
+		showNotif({
+			Color = Color3.fromRGB(255, 140, 0),
+			Icon = "rbxassetid://15047371063",
+			Text = "Already owned",
+			Duration = 3
+		})
+		hidePurchaseUI()
+		return
+	end
+
+	-- Process purchase (YOUR working logic)
+	setBal(CFG.balance - price)
+	updateStandUI(price)
+	updateLeaderboard(price)
+
+	if data.assetId then
+		CFG.purchasedItems[data.assetId] = true
+	end
+
+	-- Effects (YOUR working logic)
+	if CFG.nukeEnabled and CFG.nukeOnGamepass and price >= NUKE_THRESHOLD then
+		task.delay(0.4, function()
+			triggerNuke(data.username, price)
+		end)
+	else
+		playDonSnd(price)
+	end
+
+	hidePurchaseUI()
+
+	-- Success effects (YOUR working notifications)
+	task.delay(0.3, function()
+		fireNotifs(data.username or "?", price, CFG.notifStyle)
+		spawnCoinRain(data.username or "?")
+		showNotif({
+			Color = Color3.fromRGB(0, 180, 80),
+			Text = "Sent " .. fmt(price) .. " to " .. (data.username or "?"),
+			Duration = 3
+		})
+	end)
+end)
+
+-- Keybind to close
+UserInputService.InputBegan:Connect(function(inp, gpe)
+	if not gpe and inp.KeyCode == Enum.KeyCode.X and isPurchaseOpen then
+		hidePurchaseUI()
+	end
+end)
+
+local activePrompt = {
+	open = function(data)
+		showPurchaseUI(data)
+	end,
+	hideAll = function()
+		hidePurchaseUI()
+	end,
+	destroy = function()
+		pcall(function() purchaseGui:Destroy() end)
+	end
+}
+
+local function getButtonId(obj) for name,val in pairs(obj:GetAttributes()) do if (name:lower():find("id")or name:lower():find("asset")) and type(val)=="number" then return val end end; for _,c in ipairs(obj:GetChildren()) do if (c.Name:lower():find("id")or c.Name:lower():find("asset")) and (c:IsA("NumberValue")or c:IsA("IntValue")) then return c.Value end end; if tonumber(obj.Name) then return tonumber(obj.Name) end; local id=obj.Name:match("Item(%d+)"); if id then return tonumber(id) end; if obj.Parent then local pid=obj.Parent.Name:match("Item(%d+)"); if pid then return tonumber(pid) end end; return nil end
+local function getUsernameCtx(btn) for _,c in ipairs(btn:GetDescendants()) do if (c:IsA("TextLabel")or c:IsA("TextButton")) and c.Text then local u=c.Text:match("@([%w_]+)"); if u then return u end end end; local cur=btn; for _=1,10 do cur=cur.Parent; if not cur then break end; for _,d in pairs(cur:GetDescendants()) do if d:IsA("TextLabel") and d.Text and d.Visible then local m=d.Text:match("@([%w_]+)"); if m and #m>=3 then return m end end end end; return nil end
+local function hookBtn(btn)
+	if not (btn:IsA("TextButton")or btn:IsA("ImageButton")) then return end; if btn:FindFirstChild("__FD_Ov") then return end
+	local id=getButtonId(btn); if not id then return end
+	if getconnections then for _,ev in ipairs({"MouseButton1Click","Activated"}) do pcall(function() for _,conn in ipairs(getconnections(btn[ev])) do if conn.Function then pcall(function() conn:Disable() end) end end end) end end
+	pcall(function() local old; old=hookmetamethod(game,"__namecall",newcclosure(function(self,...) local m=getnamecallmethod(); if self==MarketplaceService and (m=="PromptGamePassPurchase"or m=="PromptProductPurchase"or m=="PromptPurchase") then return end; return old(self,...) end)) end)
+	local ov=Instance.new("TextButton"); ov.Name="__FD_Ov"; ov.BackgroundTransparency=1; ov.Text=""; ov.Size=UDim2.new(1,0,1,0); ov.ZIndex=(btn.ZIndex or 1)+10; ov.Parent=btn
+	ov.MouseButton1Click:Connect(function()
+		local cid = getButtonId(btn) or id
+		local info = getInfo(btn, 0, cid)
+		if info.username == "Player" then
+			local u = getUsernameCtx(btn)
+			if u then info.username = u end
+		end
+		if info.assetId and CFG.purchasedItems[info.assetId] then
+			playSnd("Error", 0.8)
+			showNotif({
+				Color = Color3.fromRGB(255, 140, 0),
+				Icon = "rbxassetid://15047371063",
+				Text = "Already owned",
+				Duration = 3
+			})
+			return
+		end
+		openPrompt(info)
+	end)
+end
+local function setupIF(f) if not f or CFG.processedFrames[f] then return end; CFG.processedFrames[f]=true; if f:IsA("TextButton")or f:IsA("ImageButton") then hookBtn(f) else for _,c in ipairs(f:GetDescendants()) do if (c:IsA("TextButton")or c:IsA("ImageButton")) and not c:FindFirstChild("__FD_Ov") then if getButtonId(c) then hookBtn(c) end end end end end
+task.spawn(function() task.wait(2); for _,f in pairs(CollectionService:GetTagged("ItemFrame")) do pcall(function() setupIF(f) end) end; for _,obj in ipairs(playerGui:GetDescendants()) do pcall(function() if (obj:IsA("TextButton")or obj:IsA("ImageButton")) and not obj:FindFirstChild("__FD_Ov") then if getButtonId(obj) then hookBtn(obj) end end end) end end)
+CollectionService:GetInstanceAddedSignal("ItemFrame"):Connect(function(f) pcall(function() setupIF(f) end) end)
+playerGui.DescendantAdded:Connect(function(d) task.delay(0.1,function() if d and d.Parent then hookBtn(d) end end) end)
+task.spawn(function() while true do task.wait(4); pcall(function() for _,obj in ipairs(playerGui:GetDescendants()) do if (obj:IsA("TextButton")or obj:IsA("ImageButton")) and not obj:FindFirstChild("__FD_Ov") then if getButtonId(obj) then hookBtn(obj) end end end end) end end)
+
+local mainGui=Instance.new("ScreenGui"); mainGui.Name="BiryukovHubGui"; mainGui.Parent=playerGui; mainGui.ResetOnSpawn=false; mainGui.DisplayOrder=9999; mainGui.IgnoreGuiInset=true
 -- ═════════════════════════════════════════════
 -- UPDATED PURCHASE UI (Roblox-style, script-only)
 -- ═════════════════════════════════════════════
@@ -1733,335 +2012,6 @@ bottomPad.BackgroundTransparency = 1
 bottomPad.ZIndex = 3
 bottomPad.Parent = card
 
--- ═════════════════════════════════════════════
--- ANIMATION & FUNCTIONALITY
--- ═════════════════════════════════════════════
-
-local currentPurchaseData = nil
-local isPurchaseOpen = false
-
--- Hide initially
-purchaseGui.Enabled = false
-
-
-
-local function showPurchaseUI(data)
-	if isPurchaseOpen then 
-		hidePurchaseUI()
-		task.wait(0.1)
-	end
-	isPurchaseOpen = true
-	currentPurchaseData = data
-
-	closeRealPrompts()
-
-	-- Clean username (no 's stand, no spaces)
-	local cleanUsername = data.username or "Playername"
-	cleanUsername = cleanUsername:gsub("'s [Ss]tand", ""):gsub("'s", ""):gsub("%s+$", "")
-
-	-- Display name fallback chain: explicit name → username → "Player Name"
-	local displayName = data.name
-	if not displayName or displayName == "Donation" or displayName == "" then
-		displayName = cleanUsername
-	end
-
-	-- Update text fields
-	playerNameLbl.Text = displayName
-	userHandleLbl.Text = "@" .. cleanUsername
-	amountText.Text = fmt(data.price or 0)
-
-	-- Update avatar (deferred, loads from username's userId)
-	task.spawn(function()
-		local targetUserId = data.userId
-		local targetUsername = cleanUsername
-
-		-- Resolve userId from username if missing
-		if not targetUserId and targetUsername and targetUsername ~= "Player" and targetUsername ~= "Playername" then
-			local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(targetUsername) end)
-			if ok and uid then
-				targetUserId = uid
-			end
-		end
-
-		-- Load avatar headshot
-		if targetUserId then
-			local ok, thumb = pcall(function()
-				return Players:GetUserThumbnailAsync(targetUserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
-			end)
-			if ok and thumb and thumb ~= "" then
-				avatarImg.Image = thumb
-				defaultAvatarIcon.Visible = false
-				return
-			end
-		end
-
-		-- Fallback: gamepass icon
-		if data.imageId and data.imageId > 0 then
-			avatarImg.Image = "rbxassetid://" .. tostring(data.imageId)
-			defaultAvatarIcon.Visible = false
-		elseif data.assetId then
-			avatarImg.Image = "rbxthumb://type=GamePass&id=" .. tostring(data.assetId) .. "&w=150&h=150"
-			defaultAvatarIcon.Visible = false
-		else
-			avatarImg.Image = ""
-			defaultAvatarIcon.Visible = true
-		end
-	end)
-
-	-- Update fee text
-	local fee = math.floor((data.price or 0) * 0.1)
-	local afterFee = (data.price or 0) - fee
-	feeText.Text = "The recipient will get " .. fmt(afterFee) .. " Robux after fees. In-game transfers include a 10% creator fee."
-
-	-- Animate in
-	purchaseGui.Enabled = true
-	overlay.BackgroundTransparency = 1
-	card.Position = UDim2.new(0.5, 0, 0.55, 0)
-	card.BackgroundTransparency = 0.1
-
-	TweenService:Create(overlay, TweenInfo.new(0.2), {BackgroundTransparency = 0.4}):Play()
-	TweenService:Create(card, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-		Position = UDim2.new(0.5, 0, 0.5, 0),
-		BackgroundTransparency = 0
-	}):Play()
-end
-
-local function hidePurchaseUI()
-	if not isPurchaseOpen then return end
-
-	TweenService:Create(card, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-		Position = UDim2.new(0.5, 0, 0.55, 0),
-		BackgroundTransparency = 0.1
-	}):Play()
-	TweenService:Create(overlay, TweenInfo.new(0.2), {BackgroundTransparency = 1}):Play()
-
-	task.delay(0.25, function()
-		purchaseGui.Enabled = false
-		isPurchaseOpen = false
-		currentPurchaseData = nil
-		-- Reset all text fields to defaults so next open doesn't flash old data
-		playerNameLbl.Text = "Player Name"
-		userHandleLbl.Text = "@Playername"
-		amountText.Text = "0"
-		avatarImg.Image = ""
-		defaultAvatarIcon.Visible = true
-		feeText.Text = "The recipient will get 0 Robux after fees. In-game transfers include a 10% creator fee."
-	end)
-end
-
--- Close button
-closeBtn.MouseButton1Click:Connect(hidePurchaseUI)
-
--- Send button logic
-sendBtn.MouseButton1Click:Connect(function()
-	if not currentPurchaseData then return end
-
-	local data = currentPurchaseData
-	local price = data.price or 0
-
-	-- Check already owned
-	if data.assetId and CFG.purchasedItems[data.assetId] then
-		playSnd("Error", 0.8)
-		showNotif({
-			Color = Color3.fromRGB(255, 140, 0),
-			Icon = "rbxassetid://15047371063",
-			Text = "Already owned",
-			Duration = 3
-		})
-		hidePurchaseUI()
-		return
-	end
-
-	-- Process purchase
-	setBal(CFG.balance - price)
-	updateStandUI(price)
-	updateLeaderboard(price)
-
-	if data.assetId then
-		CFG.purchasedItems[data.assetId] = true
-	end
-
-	-- Effects
-	if CFG.nukeEnabled and CFG.nukeOnGamepass and price >= NUKE_THRESHOLD then
-		task.delay(0.4, function()
-			triggerNuke(data.username, price)
-		end)
-	else
-		playDonSnd(price)
-	end
-
-	hidePurchaseUI()
-
-	-- Success effects
-	task.delay(0.3, function()
-		fireNotifs(data.username or "?", price, CFG.notifStyle)
-		spawnCoinRain(data.username or "?")
-		showNotif({
-			Color = Color3.fromRGB(0, 180, 80),
-			Text = "Sent " .. fmt(price) .. " to " .. (data.username or "?"),
-			Duration = 3
-		})
-	end)
-end)
-
--- Set active prompt to use new UI
-activePrompt = {
-	open = function(data)
-		showPurchaseUI(data)
-	end,
-	hideAll = function()
-		hidePurchaseUI()
-	end,
-	destroy = function()
-		pcall(function() purchaseGui:Destroy() end)
-	end
-}
-
--- Keybind to close
-UserInputService.InputBegan:Connect(function(inp, gpe)
-	if not gpe and inp.KeyCode == Enum.KeyCode.X and isPurchaseOpen then
-		hidePurchaseUI()
-	end
-end)
-
-
-
-local function getButtonId(obj) for name,val in pairs(obj:GetAttributes()) do if (name:lower():find("id")or name:lower():find("asset")) and type(val)=="number" then return val end end; for _,c in ipairs(obj:GetChildren()) do if (c.Name:lower():find("id")or c.Name:lower():find("asset")) and (c:IsA("NumberValue")or c:IsA("IntValue")) then return c.Value end end; if tonumber(obj.Name) then return tonumber(obj.Name) end; local id=obj.Name:match("Item(%d+)"); if id then return tonumber(id) end; if obj.Parent then local pid=obj.Parent.Name:match("Item(%d+)"); if pid then return tonumber(pid) end end; return nil end
--- REPLACE the entire getUsernameCtx function:
-local function getUsernameCtx(btn) 
-	for _,c in ipairs(btn:GetDescendants()) do 
-		if (c:IsA("TextLabel")or c:IsA("TextButton")) and c.Text then 
-			local u=c.Text:match("@([%w_]+)"); 
-			if u then return u end 
-		end 
-	end; 
-	local cur=btn; 
-	for _=1,10 do 
-		cur=cur.Parent; 
-		if not cur then break end; 
-		for _,d in pairs(cur:GetDescendants()) do 
-			if d:IsA("TextLabel") and d.Text and d.Visible then 
-				local m=d.Text:match("@([%w_]+)"); 
-				if m and #m>=3 then return m end 
-			end 
-		end 
-	end; 
-	return nil 
-end
-
--- WITH:
-local function getUsernameCtx(btn)
-	-- First: check the button's own text or immediate children
-	if btn:IsA("TextLabel") or btn:IsA("TextButton") then
-		local u = btn.Text:match("@([%w_]+)")
-		if u then return u end
-	end
-
-	for _, c in ipairs(btn:GetChildren()) do
-		if (c:IsA("TextLabel") or c:IsA("TextButton")) and c.Text then
-			local u = c.Text:match("@([%w_]+)")
-			if u then return u end
-		end
-	end
-
-	-- Walk up with strict limits
-	local cur = btn
-	for depth = 1, 5 do
-		cur = cur.Parent
-		if not cur then break end
-		if cur:IsA("ScreenGui") then break end
-
-		-- Check direct children first (more reliable)
-		for _, d in ipairs(cur:GetChildren()) do
-			if d:IsA("TextLabel") and d.Text and d.Visible then
-				local parentName = d.Parent and d.Parent.Name:lower() or ""
-				-- Only match labels in name/title/owner containers
-				if parentName:find("name") or parentName:find("title") or parentName:find("owner") or parentName:find("booth") or parentName:find("stand") or parentName:find("header") then
-					local m = d.Text:match("@([%w_]+)")
-					if m and #m >= 3 then return m end
-				end
-			end
-		end
-	end
-	return nil
-end
-local function hookBtn(btn)
-	if not (btn:IsA("TextButton") or btn:IsA("ImageButton")) then return end
-	if btn:FindFirstChild("__FD_Ov") then return end
-
-	local id = getButtonId(btn)
-	if not id then return end
-
-	-- Only disable connections if getconnections exists (executor)
-	if typeof(getconnections) == "function" then
-		for _, ev in ipairs({"MouseButton1Click", "Activated"}) do
-			pcall(function()
-				for _, conn in ipairs(getconnections(btn[ev])) do
-					if conn.Function then
-						pcall(function() conn:Disable() end)
-					end
-				end
-			end)
-		end
-	end
-
-	-- Only hook metamethod if hookmetamethod exists (executor)
-	if typeof(hookmetamethod) == "function" and typeof(newcclosure) == "function" and typeof(getnamecallmethod) == "function" then
-		pcall(function()
-			local old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-				local m = getnamecallmethod()
-				if self == MarketplaceService and (m == "PromptGamePassPurchase" or m == "PromptProductPurchase" or m == "PromptPurchase") then
-					return
-				end
-				return old(self, ...)
-			end))
-		end)
-	end
-
-	local ov = Instance.new("TextButton")
-	ov.Name = "__FD_Ov"
-	ov.BackgroundTransparency = 1
-	ov.Text = ""
-	ov.Size = UDim2.new(1, 0, 1, 0)
-	ov.ZIndex = (btn.ZIndex or 1) + 10
-	ov.Parent = btn
-
-	ov.MouseButton1Click:Connect(function()
-		task.wait()
-
-		local cid = getButtonId(btn) or id
-		local info = getInfo(btn, 0, cid)
-
-		-- Only override if getInfo failed to find a username
-		if info.username == "Player" or info.username == "Playername" then
-			local u = getUsernameCtx(btn)
-			if u then 
-				info.username = u
-				-- Resolve userId for this fallback
-				local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(u) end)
-				if ok and uid then info.userId = uid end
-			end
-		end
-
-		print("=== CLICK DEBUG ===")
-		print("  AssetId: " .. tostring(cid))
-		print("  Detected Username: " .. tostring(info.username))
-		print("  Fallback Username: " .. tostring(getUsernameCtx(btn) or "NONE"))
-		print("  Price: " .. tostring(info.price))
-		print("  Name: " .. tostring(info.name))
-		print("  UserId: " .. tostring(info.userId))
-		print("  Button Path: " .. btn:GetFullName())
-		print("===================")
-		activePrompt.open(info)
-	end)
-end
-local function setupIF(f) if not f or CFG.processedFrames[f] then return end; CFG.processedFrames[f]=true; if f:IsA("TextButton")or f:IsA("ImageButton") then hookBtn(f) else for _,c in ipairs(f:GetDescendants()) do if (c:IsA("TextButton")or c:IsA("ImageButton")) and not c:FindFirstChild("__FD_Ov") then if getButtonId(c) then hookBtn(c) end end end end end
-task.spawn(function() task.wait(2); for _,f in pairs(CollectionService:GetTagged("ItemFrame")) do pcall(function() setupIF(f) end) end; for _,obj in ipairs(playerGui:GetDescendants()) do pcall(function() if (obj:IsA("TextButton")or obj:IsA("ImageButton")) and not obj:FindFirstChild("__FD_Ov") then if getButtonId(obj) then hookBtn(obj) end end end) end end)
-CollectionService:GetInstanceAddedSignal("ItemFrame"):Connect(function(f) pcall(function() setupIF(f) end) end)
-playerGui.DescendantAdded:Connect(function(d) task.delay(0.1,function() if d and d.Parent then hookBtn(d) end end) end)
-task.spawn(function() while true do task.wait(4); pcall(function() for _,obj in ipairs(playerGui:GetDescendants()) do if (obj:IsA("TextButton")or obj:IsA("ImageButton")) and not obj:FindFirstChild("__FD_Ov") then if getButtonId(obj) then hookBtn(obj) end end end end) end end)
-
-local mainGui=Instance.new("ScreenGui"); mainGui.Name="BiryukovHubGui"; mainGui.Parent=playerGui; mainGui.ResetOnSpawn=false; mainGui.DisplayOrder=9999; mainGui.IgnoreGuiInset=true
 local panel=Instance.new("Frame"); panel.Size=UDim2.new(0,300,0,430); panel.Position=UDim2.new(0,16,1,-450); panel.BackgroundColor3=Color3.fromRGB(12,10,20); panel.BorderSizePixel=0; panel.ClipsDescendants=true; panel.Parent=mainGui
 Instance.new("UICorner",panel).CornerRadius=UDim.new(0,14)
 local pGrad=Instance.new("UIGradient",panel); pGrad.Rotation=145; pGrad.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(28,18,48)),ColorSequenceKeypoint.new(0.5,Color3.fromRGB(14,10,26)),ColorSequenceKeypoint.new(1,Color3.fromRGB(8,6,16))})
@@ -2304,6 +2254,18 @@ do
 	sNext.MouseButton1Click:Connect(function() styleIdx=styleIdx<#styles and styleIdx+1 or 1; sVal.Text=styles[styleIdx]; CFG.notifStyle=styles[styleIdx] end)
 end
 
+mkSection(setTab,"BUY UI STYLE")
+do
+	local uiStyles={"krato","v3"}
+	local uiIdx=1; for i,s in ipairs(uiStyles) do if s==CFG.uiStyle then uiIdx=i; break end end
+	local uiRow=Instance.new("Frame",setTab); uiRow.Size=UDim2.new(1,0,0,40); uiRow.BackgroundColor3=Color3.fromRGB(18,14,30); uiRow.BorderSizePixel=0; Instance.new("UICorner",uiRow).CornerRadius=UDim.new(0,9); local ust=Instance.new("UIStroke",uiRow); ust.Color=Color3.fromRGB(70,40,120); ust.Transparency=0.6; ust.Thickness=1
+	local uLbl=Instance.new("TextLabel",uiRow); uLbl.Size=UDim2.new(0.4,0,1,0); uLbl.Position=UDim2.fromOffset(12,0); uLbl.BackgroundTransparency=1; uLbl.Text="Theme"; uLbl.TextColor3=Color3.fromRGB(195,180,220); uLbl.Font=Enum.Font.GothamMedium; uLbl.TextSize=12; uLbl.TextXAlignment=Enum.TextXAlignment.Left
+	local uVal=Instance.new("TextLabel",uiRow); uVal.Size=UDim2.new(0.3,0,1,0); uVal.AnchorPoint=Vector2.new(0.5,0); uVal.Position=UDim2.new(0.6,0,0,0); uVal.BackgroundTransparency=1; uVal.Text=uiStyles[uiIdx]; uVal.TextColor3=Color3.fromRGB(220,180,255); uVal.Font=Enum.Font.GothamBold; uVal.TextSize=12; uVal.TextXAlignment=Enum.TextXAlignment.Center
+	local uPrev=mkBtn(uiRow,"◀",Color3.fromRGB(40,28,70),26); uPrev.Size=UDim2.fromOffset(26,26); uPrev.Position=UDim2.new(1,-58,0.5,-13); uPrev.AutoButtonColor=false
+	local uNext=mkBtn(uiRow,"▶",Color3.fromRGB(40,28,70),26); uNext.Size=UDim2.fromOffset(26,26); uNext.Position=UDim2.new(1,-28,0.5,-13); uNext.AutoButtonColor=false
+	uPrev.MouseButton1Click:Connect(function() uiIdx=uiIdx>1 and uiIdx-1 or #uiStyles; uVal.Text=uiStyles[uiIdx]; CFG.uiStyle=uiStyles[uiIdx]; rebuildPrompt() end)
+	uNext.MouseButton1Click:Connect(function() uiIdx=uiIdx<#uiStyles and uiIdx+1 or 1; uVal.Text=uiStyles[uiIdx]; CFG.uiStyle=uiStyles[uiIdx]; rebuildPrompt() end)
+end
 
 -- Startup notification (loading screen removed)
 task.spawn(function()
