@@ -1940,14 +1940,14 @@ local function hookBtn(btn)
 
 		local cid = getButtonId(btn) or id
 
-		-- Find booth root
+		-- Find booth root (limit to 5 levels, avoid ScreenGui roots)
 		local boothRoot = nil
 		pcall(function()
 			local cur = btn
-			for _ = 1, 15 do
+			for _ = 1, 5 do
 				if not cur then break end
 				local name = cur.Name:lower()
-				if name:find("booth") or name:find("stand") or name:find("shop") or name:find("donation") or name:find("stall") or name:find("vendor") or name:find("seller") then
+				if name:find("booth") or name:find("stand") or name:find("shop") or name:find("donation") or name:find("stall") then
 					boothRoot = cur
 					break
 				end
@@ -1960,82 +1960,17 @@ local function hookBtn(btn)
 		local forcedUserId = nil
 		local forcedPrice = nil
 
-		-- Scan booth root for text
-		if boothRoot then
-			pcall(function()
-				local allText = {}
-				local function scan(obj, depth)
-					if depth > 6 then return end
-					for _, child in ipairs(obj:GetChildren()) do
-						if child:IsA("TextLabel") or child:IsA("TextButton") then
-							if child.Text and child.Visible then
-								table.insert(allText, {
-									text = child.Text,
-									obj = child
-								})
-							end
-						end
-						scan(child, depth + 1)
-					end
-				end
-				scan(boothRoot, 0)
-
-				for _, t in ipairs(allText) do
-					local text = t.text
-
-					-- @Username pattern
-					local m = text:match("@([%w_]+)")
-					if m and #m >= 3 and m:lower() ~= "playername" then
-						forcedUsername = m
-						-- Display name = sibling text without @
-						if t.obj and t.obj.Parent then
-							for _, sibling in ipairs(t.obj.Parent:GetChildren()) do
-								if sibling ~= t.obj and (sibling:IsA("TextLabel") or sibling:IsA("TextButton")) then
-									local st = sibling.Text or ""
-									if not st:find("@") and st ~= "Donation" and #st > 0 and #st < 30 and not st:find("'s") then
-										forcedDisplayName = st
-										break
-									end
-								end
-							end
-						end
-					end
-
-					-- "Username's stand" pattern → extract just username
-					local user = text:match("^([%w_]+)'s%s+[Ss]tand")
-					if user and #user >= 3 then
-						forcedUsername = user
-					end
-
-					-- Price from button text fallback
-					if forcedPrice == 0 or not forcedPrice then
-						local num = text:match("[$]?([%d,%.]+)[KkMmBb]?")
-						if num then
-							local clean = num:gsub(",", "")
-							local n = tonumber(clean)
-							if n and n > 0 then
-								if text:find("K") or text:find("k") then n = n * 1e3
-								elseif text:find("M") or text:find("m") then n = n * 1e6
-								elseif text:find("B") or text:find("b") then n = n * 1e9 end
-								forcedPrice = math.floor(n)
-							end
-						end
-					end
-				end
-			end)
-		end
-
-		-- Check attributes on button and parents
+		-- === OPTION A: Use button/parent attributes ONLY (safest) ===
 		pcall(function()
 			for _, obj in ipairs({btn, btn.Parent, btn.Parent and btn.Parent.Parent}) do
 				if not obj then continue end
 				for attrName, attrVal in pairs(obj:GetAttributes()) do
 					local lower = attrName:lower()
-					if (lower:find("creator") or lower:find("owner")) and lower:find("id") and type(attrVal) == "number" and attrVal > 0 then
-						forcedUserId = attrVal
-					end
 					if lower:find("creator") and lower:find("name") and type(attrVal) == "string" and attrVal ~= "" then
 						forcedUsername = attrVal
+					end
+					if lower:find("creator") and lower:find("id") and type(attrVal) == "number" and attrVal > 0 then
+						forcedUserId = attrVal
 					end
 					if lower:find("price") and type(attrVal) == "number" and attrVal > 0 then
 						forcedPrice = attrVal
@@ -2044,10 +1979,96 @@ local function hookBtn(btn)
 			end
 		end)
 
+		-- === OPTION B: If no CreatorName attribute, scan booth text carefully ===
+		if not forcedUsername or forcedUsername == "Player" then
+			if boothRoot then
+				pcall(function()
+					local allText = {}
+
+					-- Scan only the booth's direct UI (depth 2 max)
+					local function scanShallow(obj, depth)
+						if depth > 2 then return end
+						for _, child in ipairs(obj:GetChildren()) do
+							if child:IsA("TextLabel") or child:IsA("TextButton") then
+								if child.Text and child.Visible and #child.Text > 0 then
+									table.insert(allText, {
+										text = child.Text,
+										obj = child,
+										depth = depth
+									})
+								end
+							end
+							scanShallow(child, depth + 1)
+						end
+					end
+					scanShallow(boothRoot, 0)
+
+					-- PRIORITY 1: "Username's Stand" pattern (most reliable)
+					for _, t in ipairs(allText) do
+						local user = t.text:match("^([%w_]+)'s%s+[Ss]tand")
+						if user and #user >= 3 then
+							forcedUsername = user
+							break
+						end
+					end
+
+					-- PRIORITY 2: @Username near an avatar image
+					if not forcedUsername or forcedUsername == "Player" then
+						for _, t in ipairs(allText) do
+							local hasAvatarNearby = false
+							if t.obj and t.obj.Parent then
+								for _, sib in ipairs(t.obj.Parent:GetChildren()) do
+									if sib:IsA("ImageLabel") then
+										hasAvatarNearby = true
+										break
+									end
+								end
+							end
+
+							local m = t.text:match("@([%w_]+)")
+							if m and #m >= 3 and m:lower() ~= "playername" and hasAvatarNearby then
+								forcedUsername = m
+								-- Try to get display name from sibling
+								if t.obj and t.obj.Parent then
+									for _, sibling in ipairs(t.obj.Parent:GetChildren()) do
+										if sibling ~= t.obj and (sibling:IsA("TextLabel") or sibling:IsA("TextButton")) then
+											local st = sibling.Text or ""
+											if not st:find("@") and st ~= "Donation" and #st > 0 and #st < 30 and not st:find("'s") then
+												forcedDisplayName = st
+												break
+											end
+										end
+									end
+								end
+								break
+							end
+						end
+					end
+
+					-- PRIORITY 3: Any @username at depth 0-1 (top-level booth UI)
+					if not forcedUsername or forcedUsername == "Player" then
+						for _, t in ipairs(allText) do
+							local m = t.text:match("@([%w_]+)")
+							if m and #m >= 3 and m:lower() ~= "playername" and t.depth <= 1 then
+								forcedUsername = m
+								break
+							end
+						end
+					end
+				end)
+			end
+		end
+
+		-- FALLBACK: Walk up button ancestors for @username (old reliable method)
+		if not forcedUsername or forcedUsername == "Player" then
+			local u = getUsernameCtx(btn)
+			if u then forcedUsername = u end
+		end
+
 		local info = getInfo(btn, forcedPrice, cid)
 
-		-- Force overrides from booth scan
-		if forcedUsername and forcedUsername ~= "" then
+		-- Apply forced overrides
+		if forcedUsername and forcedUsername ~= "" and forcedUsername ~= "Player" then
 			info.username = forcedUsername
 		end
 		if forcedDisplayName and forcedDisplayName ~= "" then
@@ -2057,19 +2078,7 @@ local function hookBtn(btn)
 			info.userId = forcedUserId
 		end
 
-		-- CRITICAL: if still no username, use old getUsernameCtx
-		if info.username == "Player" or info.username == "Playername" then
-			local u = getUsernameCtx(btn)
-			if u then info.username = u end
-		end
-		if forcedDisplayName and forcedDisplayName ~= "" then
-			info.name = forcedDisplayName
-		end
-		if forcedUserId and forcedUserId > 0 then
-			info.userId = forcedUserId
-		end
-
-		-- Resolve userId from username if missing
+		-- Final fallback: resolve userId from username
 		if info.username and info.username ~= "Player" and (not info.userId or info.userId == 0) then
 			task.spawn(function()
 				local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(info.username) end)
