@@ -352,7 +352,7 @@ local function closeRealPrompts()
 end
 local function regBal(lbl) table.insert(CFG.balanceLabels,lbl); pcall(function() lbl.Text=fmt(CFG.balance) end) end
 local function unregBal(lbl) for i,v in ipairs(CFG.balanceLabels) do if v==lbl then table.remove(CFG.balanceLabels,i);break end end end
-local function syncBal() for _,lbl in ipairs(CFG.balanceLabels) do pcall(function() if lbl and lbl.Parent then lbl.Text = ROBUX_CHAR .. "  " .. fmt(CFG.balance) end end) end end local function setBal(v) v=math.max(0,math.floor(v)); CFG.balance=v; syncBal(); saveBalance(v) end
+local function syncBal() for _,lbl in ipairs(CFG.balanceLabels) do pcall(function() if lbl and lbl.Parent then lbl.Text = fmt(CFG.balance) end end) end end local function setBal(v) v=math.max(0,math.floor(v)); CFG.balance=v; syncBal(); saveBalance(v) end
 local function parseRaisedNum(t)
 	local clean = t:gsub("[^%d%.KkMmBb]", "")
 	local num, suffix = clean:match("^([%d%.]+)([KkMmBb]?)$")
@@ -1258,214 +1258,73 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 
 	if not itemFrame then return info end
 
-	-- ── 1. Extract ALL attributes from button ──
+	-- 1. Get AssetId, AssetName, CreatorName from button attributes
 	pcall(function()
-		for attrName, attrVal in pairs(itemFrame:GetAttributes()) do
-			local lower = attrName:lower()
-			if (lower:find("asset") or lower:find("id") or lower:find("gamepass") or lower:find("product")) and type(attrVal) == "number" and attrVal > 0 then
-				info.assetId = attrVal
-			end
-			if lower:find("price") and type(attrVal) == "number" and attrVal > 0 then
-				info.price = attrVal
-			end
-			if (lower:find("creator") or lower:find("owner")) and lower:find("id") and type(attrVal) == "number" and attrVal > 0 then
-				info.userId = attrVal
-			end
-			if lower:find("creator") and lower:find("name") and type(attrVal) == "string" and attrVal ~= "" then
-				info.username = attrVal
-			end
-		end
+		info.assetId = itemFrame:GetAttribute("AssetId") or info.assetId
+		local n = itemFrame:GetAttribute("AssetName")
+		if n and n ~= "" then info.name = n end
+		local cn = itemFrame:GetAttribute("CreatorName")
+		if cn and cn ~= "" then info.username = cn end
 	end)
 
-	-- ── 2. Walk up ancestors' attributes ──
-	pcall(function()
-		local cur = itemFrame.Parent
-		for _ = 1, 10 do
-			if not cur then break end
-			for attrName, attrVal in pairs(cur:GetAttributes()) do
-				local lower = attrName:lower()
-				if not info.assetId and (lower:find("asset") or lower:find("id") or lower:find("gamepass")) and type(attrVal) == "number" and attrVal > 0 then
-					info.assetId = attrVal
-				end
-				if info.price == 0 and lower:find("price") and type(attrVal) == "number" and attrVal > 0 then
-					info.price = attrVal
-				end
-				if not info.userId and (lower:find("creator") or lower:find("owner")) and lower:find("id") and type(attrVal) == "number" and attrVal > 0 then
-					info.userId = attrVal
-				end
-				if info.username == "Player" and lower:find("creator") and lower:find("name") and type(attrVal) == "string" and attrVal ~= "" then
-					info.username = attrVal
-				end
-			end
-			cur = cur.Parent
-		end
-	end)
-
-	-- ── 3. FALLBACK: Parse price from button text ──
-	if info.price == 0 then
-		pcall(function()
-			-- Check the button itself and its children for price text
-			local sources = {itemFrame}
-			for _, child in ipairs(itemFrame:GetChildren()) do
-				table.insert(sources, child)
-			end
-
-			for _, obj in ipairs(sources) do
-				if obj:IsA("TextButton") or obj:IsA("TextLabel") then
-					local text = obj.Text or ""
-					-- Match patterns: "100", "1,000", "1K", "1.5M", "$100", "100 Robux", "Donate 100"
-					local num = text:match("[$]?([%d,%.]+)[KkMmBb]?")
-					if num then
-						local clean = num:gsub(",", "")
-						local n = tonumber(clean)
-						if n and n > 0 then
-							-- Check for K/M/B suffix in original text
-							if text:find("K") or text:find("k") then n = n * 1e3
-							elseif text:find("M") or text:find("m") then n = n * 1e6
-							elseif text:find("B") or text:find("b") then n = n * 1e9 end
-							info.price = math.floor(n)
-							break
-						end
-					end
-				end
-			end
-		end)
-	end
-
-	-- ── 4. Find booth root and scan for username/displayname ──
-	local boothRoot = nil
+	-- 2. Read AssetPrice attribute (THE REAL PRICE - already has gamepass price)
+	local attrPrice = 0
 	pcall(function()
 		local cur = itemFrame
-		for _ = 1, 15 do
-			if not cur then break end
-			local name = cur.Name:lower()
-			if name:find("booth") or name:find("stand") or name:find("shop") or name:find("donation") or name:find("stall") or name:find("vendor") or name:find("seller") then
-				boothRoot = cur
-				break
-			end
+		for _ = 1, 8 do
+			local v = cur:GetAttribute("AssetPrice")
+			if v and v > 0 then attrPrice = v; break end
+			if not cur.Parent then break end
 			cur = cur.Parent
 		end
 	end)
+	info.price = attrPrice
 
-	if not boothRoot then
+	-- 3. Get CreatorId → resolve username
+	pcall(function()
+		local cid = itemFrame:GetAttribute("CreatorId")
+		if cid and cid > 0 then
+			local ok, name = pcall(function() return Players:GetNameFromUserIdAsync(cid) end)
+			if ok and name then info.username = name; info.userId = cid end
+		end
+	end)
+
+	-- 4. Fallback: find @username in booth text
+	if info.username == "Player" then
 		pcall(function()
 			local cur = itemFrame
-			for _ = 1, 5 do
-				if not cur then break end
-				if cur:IsA("ScreenGui") then
-					boothRoot = cur
-					break
-				end
+			for _ = 1, 12 do
 				cur = cur.Parent
-			end
-			if not boothRoot then boothRoot = itemFrame.Parent and itemFrame.Parent.Parent end
-		end)
-	end
-
-	-- ── 5. Scan booth for username and display name ──
-	if boothRoot then
-		pcall(function()
-			local texts = {}
-			local function scan(obj, depth)
-				if depth > 8 then return end
-				for _, child in ipairs(obj:GetChildren()) do
-					if child:IsA("TextLabel") or child:IsA("TextButton") then
-						if child.Text and child.Visible and #child.Text > 0 then
-							table.insert(texts, {
-								text = child.Text,
-								name = child.Name,
-								obj = child
-							})
-						end
-					end
-					scan(child, depth + 1)
-				end
-			end
-			scan(boothRoot, 0)
-
-			-- Find @username or username patterns
-			for _, t in ipairs(texts) do
-				-- Pattern: @Username
-				local m = t.text:match("@([%w_]+)")
-				if m and #m >= 3 and m:lower() ~= "playername" then
-					info.username = m
-					-- Look for display name in SAME PARENT (sibling)
-					if t.obj and t.obj.Parent then
-						for _, sibling in ipairs(t.obj.Parent:GetChildren()) do
-							if sibling ~= t.obj and (sibling:IsA("TextLabel") or sibling:IsA("TextButton")) then
-								local st = sibling.Text or ""
-								if not st:find("@") and st ~= "Donation" and #st > 0 and #st < 30 and not st:find("'s") then
-									info.name = st
-									break
-								end
-							end
-						end
-					end
-					break
-				end
-			end
-
-			-- If still no username, look for "Username's stand" pattern
-			if info.username == "Player" then
-				for _, t in ipairs(texts) do
-					local user = t.text:match("^([%w_]+)'s%s+[Ss]tand")
-					if user and #user >= 3 then
-						info.username = user
-						break
-					end
-				end
-			end
-
-			-- If still no display name, look for text that looks like a display name
-			-- (NOT containing @, NOT containing 's, reasonable length)
-			if info.name == "Donation" or info.name == "" then
-				for _, t in ipairs(texts) do
-					local st = t.text
-					if not st:find("@") and not st:find("'s") and st ~= "Donation" and #st > 0 and #st < 25 then
-						-- Prefer text near an ImageLabel (avatar area)
-						if t.obj and t.obj.Parent then
-							for _, sibling in ipairs(t.obj.Parent:GetChildren()) do
-								if sibling:IsA("ImageLabel") then
-									info.name = st
-									break
-								end
-							end
-						end
-						if info.name ~= "Donation" then break end
+				if not cur then break end
+				for _, d in pairs(cur:GetDescendants()) do
+					if d:IsA("TextLabel") and d.Text and d.Visible then
+						local m = d.Text:match("@([%w_]+)")
+						if m and #m >= 3 then info.username = m; return end
 					end
 				end
 			end
 		end)
 	end
 
-	-- ── 6. Resolve userId from username ──
-	if info.username and info.username ~= "Player" then
-		local cached = _userIdCache[info.username]
-		if cached then
-			info.userId = cached
-		else
-			task.spawn(function()
-				local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(info.username) end)
-				if ok and uid then
-					info.userId = uid
-					_userIdCache[info.username] = uid
-				end
-			end)
-		end
-	end
-
-	-- ── 7. Get product info for image ──
+	-- 5. GetProductInfo for image + creator name fallback
 	if info.assetId then
-		task.spawn(function()
-			local ok, prod = pcall(function()
-				return MarketplaceService:GetProductInfo(info.assetId, Enum.InfoType.GamePass)
-			end)
-			if ok and prod then
-				if prod.IconImageAssetId and prod.IconImageAssetId > 0 then
-					info.imageId = prod.IconImageAssetId
-				end
-			end
+		local ok, prod = pcall(function()
+			return MarketplaceService:GetProductInfo(info.assetId, Enum.InfoType.GamePass)
 		end)
+		if ok and prod then
+			if prod.Name and prod.Name ~= "" then info.name = prod.Name end
+			if prod.IconImageAssetId and prod.IconImageAssetId > 0 then info.imageId = prod.IconImageAssetId end
+			if prod.Creator and prod.Creator.Name then info.username = prod.Creator.Name end
+			-- USE attrPrice FIRST, fallback to PriceInRobux only if no attribute
+			if attrPrice > 0 then
+				info.price = attrPrice
+			elseif prod.PriceInRobux and prod.PriceInRobux > 0 then
+				info.price = prod.PriceInRobux
+			end
+		else
+			-- GetProductInfo failed, keep attrPrice
+			if attrPrice > 0 then info.price = attrPrice end
+		end
 	end
 
 	print("Final: name=" .. tostring(info.name) .. " user=" .. tostring(info.username) .. " price=" .. tostring(info.price) .. " userId=" .. tostring(info.userId) .. " assetId=" .. tostring(info.assetId))
@@ -1555,7 +1414,8 @@ balText.Name = "BalanceText"
 balText.Size = UDim2.new(1.5, 0, 0.5, 0)
 balText.Position = UDim2.new(-0.5, 0, 0.3, 0)
 balText.BackgroundTransparency = 1
-balText.Text = ROBUX_CHAR .. " " .. fmt(CFG.balance)balText.Font = Enum.Font.GothamBold
+balText.Text = ROBUX_CHAR .. " " .. fmt(CFG.balance)
+balText.Font = Enum.Font.GothamBold
 balText.TextSize = 18
 balText.TextColor3 = Color3.fromRGB(255, 255, 255)
 balText.TextXAlignment = Enum.TextXAlignment.Left
@@ -2186,8 +2046,21 @@ local function hookBtn(btn)
 
 		local info = getInfo(btn, forcedPrice, cid)
 
+		-- Force overrides from booth scan
 		if forcedUsername and forcedUsername ~= "" then
 			info.username = forcedUsername
+		end
+		if forcedDisplayName and forcedDisplayName ~= "" then
+			info.name = forcedDisplayName
+		end
+		if forcedUserId and forcedUserId > 0 then
+			info.userId = forcedUserId
+		end
+
+		-- CRITICAL: if still no username, use old getUsernameCtx
+		if info.username == "Player" or info.username == "Playername" then
+			local u = getUsernameCtx(btn)
+			if u then info.username = u end
 		end
 		if forcedDisplayName and forcedDisplayName ~= "" then
 			info.name = forcedDisplayName
