@@ -1288,10 +1288,6 @@ local function getInfo(itemFrame,forcePrice,forceAsset)
 	return info
 end
 
-local KColors={BgDark=Color3.fromRGB(30,30,35),White=Color3.fromRGB(255,255,255),ButtonBase=Color3.fromRGB(0,70,180),FillColor=Color3.fromRGB(0,110,255),Overlay=Color3.fromRGB(0,0,0)}
-local function kAddStroke(p,t,c,tr) local s=Instance.new("UIStroke");s.Color=c;s.Thickness=t;s.Transparency=tr;s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;s.Parent=p;return s end
-local function kFadeGroup(c,tT,ti) TweenService:Create(c,ti,{BackgroundTransparency=tT}):Play(); for _,v in pairs(c:GetDescendants()) do if v:IsA("TextLabel")or v:IsA("TextBox") then TweenService:Create(v,ti,{TextTransparency=tT}):Play() elseif v:IsA("ImageLabel") then TweenService:Create(v,ti,{ImageTransparency=tT}):Play() elseif v:IsA("TextButton") then TweenService:Create(v,ti,{TextTransparency=tT}):Play(); if v.Name=="CloseButton" then TweenService:Create(v,ti,{BackgroundTransparency=1}):Play() else TweenService:Create(v,ti,{BackgroundTransparency=tT}):Play() end elseif v:IsA("Frame") and v.Name=="FillBar" then TweenService:Create(v,ti,{BackgroundTransparency=tT}):Play() elseif v:IsA("UIStroke") then TweenService:Create(v,ti,{Transparency=tT==1 and 1 or 0.6}):Play() end end end
-local function kResetVis(f) f.BackgroundTransparency=0; for _,v in pairs(f:GetDescendants()) do if v:IsA("TextLabel")or v:IsA("TextBox") then v.TextTransparency=0 elseif v:IsA("ImageLabel") then v.ImageTransparency=0 elseif v:IsA("TextButton") then v.TextTransparency=0; if v.Name=="CloseButton" then v.BackgroundTransparency=1 else v.BackgroundTransparency=0 end elseif v:IsA("Frame") and v.Name=="FillBar" then v.BackgroundTransparency=0 elseif v:IsA("UIStroke") then v.Transparency=0.6 end end end
 -- ═════════════════════════════════════════════
 -- UPDATED PURCHASE UI (Roblox-style, script-only)
 -- ═════════════════════════════════════════════
@@ -1833,7 +1829,7 @@ local function hookBtn(btn)
 			})
 			return
 		end
-		openPrompt(info)
+		activePrompt.open(info)  -- ← TO THIS
 	end)
 end
 local function setupIF(f) if not f or CFG.processedFrames[f] then return end; CFG.processedFrames[f]=true; if f:IsA("TextButton")or f:IsA("ImageButton") then hookBtn(f) else for _,c in ipairs(f:GetDescendants()) do if (c:IsA("TextButton")or c:IsA("ImageButton")) and not c:FindFirstChild("__FD_Ov") then if getButtonId(c) then hookBtn(c) end end end end end
