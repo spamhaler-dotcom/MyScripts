@@ -646,7 +646,7 @@ local _lastDonTick = -999
 addLiveDonationEntry = function(donorDisplayName, recipientRealName, amount)
 	if _donRunning then return end
 	local now = tick()
-	if now - _lastDonTick < 10 then return end
+	if now - _lastDonTick < 3 then return end  -- REDUCED from 10 to 3
 	_donRunning  = true
 	_lastDonTick = now
 
@@ -1269,7 +1269,7 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 	local attrPrice = 0
 	pcall(function()
 		local cur = itemFrame
-		for _ = 1, 8 do
+		for _ = 1, 4 do  -- REDUCED from 8 to 4
 			local v = cur:GetAttribute("AssetPrice")
 			if v and v > 0 then attrPrice = v; break end
 			if not cur.Parent then break end
@@ -1293,68 +1293,83 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 		if cached then
 			info.username = cached
 		else
-			local ok, name = pcall(function() return Players:GetNameFromUserIdAsync(creatorId) end)
-			if ok and name and name ~= "" then
-				info.username = name
-				_userIdCache[creatorId] = name
-			end
+			-- DEFER: don't block UI on name lookup
+			task.spawn(function()
+				local ok, name = pcall(function() return Players:GetNameFromUserIdAsync(creatorId) end)
+				if ok and name and name ~= "" then
+					_userIdCache[creatorId] = name
+				end
+			end)
 		end
 	end
 
-
-	if (info.username == "Player" or info.username == "Donation") and not itemFrame:GetAttribute("_forcedUsername") then		pcall(function()
-			-- Search the button/frame itself first
-			for _, d in pairs(itemFrame:GetDescendants()) do
-				if d:IsA("TextLabel") and d.Text and d.Visible then
-					local m = d.Text:match("@([%w_]+)")
-					if m and #m >= 3 and m:lower() ~= "playername" then
-						info.username = m; return
-					end
-				end
-			end
-			-- Search up the hierarchy
+	-- ── 5. Extract username from the button's IMMEDIATE booth context only ──
+	if info.username == "Player" or info.username == "Donation" then
+		pcall(function()
+			-- ONLY search within 3 levels up, and ONLY look at TextLabels that are siblings/cousins
+			-- NOT all descendants of every ancestor
 			local cur = itemFrame
-			for _ = 1, 12 do
-				cur = cur.Parent
+			for _ = 1, 3 do
 				if not cur then break end
-				for _, d in pairs(cur:GetDescendants()) do
-					if d:IsA("TextLabel") and d.Text and d.Visible then
-						local m = d.Text:match("@([%w_]+)")
-						if m and #m >= 3 and m:lower() ~= "playername" then
-							info.username = m; return
+
+				-- Only check direct children and grandchildren, not ALL descendants
+				local function checkContainer(container)
+					for _, d in pairs(container:GetChildren()) do
+						if d:IsA("TextLabel") or d:IsA("TextButton") then
+							if d.Text and d.Visible then
+								local m = d.Text:match("@([%w_]+)")
+								if m and #m >= 3 and m:lower() ~= "playername" then
+									return m
+								end
+							end
 						end
-						-- Also check for name labels without @
-						if d.Name:lower():find("name") or d.Name:lower():find("user") or d.Name:lower():find("creator") then
-							if d.Text and #d.Text > 2 and d.Text ~= "Player Name" and d.Text ~= "Donation" then
-								info.username = d.Text:gsub("@", ""); return
+						-- One level deeper only
+						for _, dd in pairs(d:GetChildren()) do
+							if dd:IsA("TextLabel") or dd:IsA("TextButton") then
+								if dd.Text and dd.Visible then
+									local m = dd.Text:match("@([%w_]+)")
+									if m and #m >= 3 and m:lower() ~= "playername" then
+										return m
+									end
+								end
 							end
 						end
 					end
+					return nil
 				end
+
+				local found = checkContainer(cur)
+				if found then
+					info.username = found
+					break
+				end
+
+				cur = cur.Parent
 			end
 		end)
 	end
 
-	-- ── 6. Try GetProductInfo ONLY as last resort for name/image (skip if rate limited) ──
+	-- ── 6. GetProductInfo DEFERRED (never block UI thread) ──
 	if info.assetId then
-		local ok, prod = pcall(function()
-			return MarketplaceService:GetProductInfo(info.assetId, Enum.InfoType.GamePass)
+		task.spawn(function()
+			local ok, prod = pcall(function()
+				return MarketplaceService:GetProductInfo(info.assetId, Enum.InfoType.GamePass)
+			end)
+			if ok and prod then
+				if prod.Name and prod.Name ~= "" and info.name == "Donation" then
+					info.name = prod.Name
+				end
+				if prod.IconImageAssetId and prod.IconImageAssetId > 0 then
+					info.imageId = prod.IconImageAssetId
+				end
+				if prod.Creator and prod.Creator.Name and info.username == "Player" then
+					info.username = prod.Creator.Name
+				end
+				if prod.Creator and prod.Creator.CreatorTargetId and not info.userId then
+					info.userId = prod.Creator.CreatorTargetId
+				end
+			end
 		end)
-		if ok and prod then
-			if prod.Name and prod.Name ~= "" and info.name == "Donation" then
-				info.name = prod.Name
-			end
-			if prod.IconImageAssetId and prod.IconImageAssetId > 0 then
-				info.imageId = prod.IconImageAssetId
-			end
-			-- Only use Creator from product if we don't have one yet
-			if prod.Creator and prod.Creator.Name and info.username == "Player" then
-				info.username = prod.Creator.Name
-			end
-			if prod.Creator and prod.Creator.CreatorTargetId and not info.userId then
-				info.userId = prod.Creator.CreatorTargetId
-			end
-		end
 	end
 
 	print("Final: name=" .. tostring(info.name) .. " user=" .. tostring(info.username) .. " price=" .. tostring(info.price) .. " userId=" .. tostring(info.userId))
@@ -1753,57 +1768,56 @@ local function showPurchaseUI(data)
 	closeRealPrompts()
 
 	-- Update data
-	-- Update data
-	-- FIX: name = display name (e.g. "rato"), username = @handle (e.g. "polobruna")
-	-- data.name = display name (e.g. "Callie123"), data.username = @handle (e.g. "callie123")
 	playerNameLbl.Text = data.name ~= "Donation" and data.name or (data.username or "Player Name")
 	userHandleLbl.Text = "@" .. (data.username or "Playername")
 	amountText.Text = fmt(data.price or 0)
 
-	-- Update avatar
-	local function loadAvatar()
-		local targetUserId = nil
+	-- Update avatar (deferred to prevent lag)
+	task.spawn(function()
+		local function loadAvatar()
+			local targetUserId = nil
 
-		-- Priority 1: userId from CreatorId
-		if data.userId and data.userId > 0 then
-			targetUserId = data.userId
-		end
-
-		-- Priority 2: Try to resolve username to userId
-		if not targetUserId and data.username and data.username ~= "Player" then
-			local ok, uid = pcall(function()
-				return Players:GetUserIdFromNameAsync(data.username)
-			end)
-			if ok and uid then
-				targetUserId = uid
+			-- Priority 1: userId from CreatorId
+			if data.userId and data.userId > 0 then
+				targetUserId = data.userId
 			end
-		end
 
-		-- Load headshot if we have a userId
-		if targetUserId then
-			local ok, thumb = pcall(function()
-				return Players:GetUserThumbnailAsync(targetUserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
-			end)
-			if ok and thumb and thumb ~= "" then
-				avatarImg.Image = thumb
+			-- Priority 2: Try to resolve username to userId
+			if not targetUserId and data.username and data.username ~= "Player" then
+				local ok, uid = pcall(function()
+					return Players:GetUserIdFromNameAsync(data.username)
+				end)
+				if ok and uid then
+					targetUserId = uid
+				end
+			end
+
+			-- Load headshot if we have a userId
+			if targetUserId then
+				local ok, thumb = pcall(function()
+					return Players:GetUserThumbnailAsync(targetUserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+				end)
+				if ok and thumb and thumb ~= "" then
+					avatarImg.Image = thumb
+					defaultAvatarIcon.Visible = false
+					return
+				end
+			end
+
+			-- Fallback: gamepass icon
+			if data.imageId and data.imageId > 0 then
+				avatarImg.Image = "rbxassetid://" .. tostring(data.imageId)
 				defaultAvatarIcon.Visible = false
-				return
+			elseif data.assetId then
+				avatarImg.Image = "rbxthumb://type=GamePass&id=" .. tostring(data.assetId) .. "&w=150&h=150"
+				defaultAvatarIcon.Visible = false
+			else
+				avatarImg.Image = ""
+				defaultAvatarIcon.Visible = true
 			end
 		end
-
-		-- Fallback: gamepass icon
-		if data.imageId and data.imageId > 0 then
-			avatarImg.Image = "rbxassetid://" .. tostring(data.imageId)
-			defaultAvatarIcon.Visible = false
-		elseif data.assetId then
-			avatarImg.Image = "rbxthumb://type=GamePass&id=" .. tostring(data.assetId) .. "&w=150&h=150"
-			defaultAvatarIcon.Visible = false
-		else
-			avatarImg.Image = ""
-			defaultAvatarIcon.Visible = true
-		end
-	end
-	loadAvatar()
+		loadAvatar()
+	end)
 
 	-- Update fee text
 	local fee = math.floor((data.price or 0) * 0.1)
@@ -1967,10 +1981,13 @@ local function hookBtn(btn)
 	ov.Parent = btn
 
 	ov.MouseButton1Click:Connect(function()
+		-- YIELD: prevents lag spike by deferring heavy work
+		task.wait()
+
 		local cid = getButtonId(btn) or id
 
 		-- ============================================
-		-- BOOTH OWNER DETECTION (Please Donate style)
+		-- BOOTH OWNER DETECTION (strict, scoped)
 		-- ============================================
 		local forcedUsername = nil
 		local forcedDisplayName = nil
@@ -1978,34 +1995,38 @@ local function hookBtn(btn)
 		local forcedPrice = nil
 
 		pcall(function()
-			-- Strategy 1: The button is inside an "ItemFrame" or booth frame
-			-- Walk UP and look for frames that contain booth owner info
+			-- Strategy 1: Walk UP only 6 levels, check DIRECT children only
+			-- Never scan all descendants of every ancestor
 			local cur = btn
-			for _ = 1, 20 do
+			for _ = 1, 6 do
 				if not cur then break end
 
-				-- Check ALL descendants of this ancestor for booth owner patterns
-				for _, d in pairs(cur:GetDescendants()) do
+				-- Check direct children only (not all descendants)
+				for _, d in pairs(cur:GetChildren()) do
 					if d:IsA("TextLabel") or d:IsA("TextButton") then
 						if d.Text and d.Visible then
 							local text = d.Text
 
-							-- Pattern A: "@[username]" with specific booth context
-							-- Booth owner @username is usually near the top of booth, not in lists
+							-- Pattern A: "@[username]" 
 							local m = text:match("@([%w_]+)")
 							if m and #m >= 3 and m:lower() ~= "playername" then
-								-- Only accept if this label is NOT inside a scrolling list (player list)
+								-- Verify this is actually a booth context by checking parent name
 								local parentName = (d.Parent and d.Parent.Name or ""):lower()
-								local grandparentName = (d.Parent and d.Parent.Parent and d.Parent.Parent.Name or ""):lower()
-								if not parentName:find("scroll") and not grandparentName:find("scroll") 
-									and not parentName:find("list") and not grandparentName:find("list")
-									and not parentName:find("chat") and not grandparentName:find("chat")
-									and not parentName:find("feed") and not grandparentName:find("feed") then
+								local isBoothContext = parentName:find("booth") 
+									or parentName:find("stand") 
+									or parentName:find("item")
+									or parentName:find("donation")
+									or parentName:find("shop")
+									or parentName:find("seller")
+									or parentName:find("owner")
+
+								-- Also accept if it's near the top of the frame (booth title area)
+								if isBoothContext then
 									forcedUsername = m
 								end
 							end
 
-							-- Pattern B: Display name above @username (booth title)
+							-- Pattern B: Display name paired with @username in same parent
 							if not text:find("@") and text ~= "Donation" and #text > 0 and #text < 30 then
 								local parent = d.Parent
 								if parent then
@@ -2054,19 +2075,35 @@ local function hookBtn(btn)
 				cur = cur.Parent
 			end
 
-			-- Strategy 2: If still no username, look for booth-specific GUI patterns
+			-- Strategy 2: ONLY search playerGui if button has NO booth context yet
+			-- AND only look inside frames that are ancestors of this button
 			if not forcedUsername then
+				local btnPath = {}
+				local p = btn
+				while p do
+					table.insert(btnPath, p)
+					p = p.Parent
+				end
+
 				for _, gui in pairs(playerGui:GetChildren()) do
 					if gui:IsA("ScreenGui") or gui:IsA("Frame") then
-						-- Look for booth UI patterns
-						for _, f in pairs(gui:GetDescendants()) do
+						-- Only check if this gui contains our button
+						local containsBtn = false
+						for _, ancestor in ipairs(btnPath) do
+							if ancestor == gui then
+								containsBtn = true
+								break
+							end
+						end
+						if not containsBtn then continue end
+
+						for _, f in pairs(gui:GetChildren()) do
 							if f:IsA("Frame") or f:IsA("ScrollingFrame") then
 								local fName = f.Name:lower()
-								-- Booth frames often have these names
 								if fName:find("booth") or fName:find("stand") or fName:find("shop") or fName:find("donation") then
 									-- Is our button inside this frame?
-									if f:IsAncestorOf(btn) or btn:IsDescendantOf(f) then
-										for _, d in pairs(f:GetDescendants()) do
+									if f:IsAncestorOf(btn) then
+										for _, d in pairs(f:GetChildren()) do
 											if d:IsA("TextLabel") and d.Text then
 												local m = d.Text:match("@([%w_]+)")
 												if m and #m >= 3 then
@@ -2104,12 +2141,14 @@ local function hookBtn(btn)
 			info.price = forcedPrice
 		end
 
-		-- Resolve userId from username if still missing
+		-- Resolve userId from username DEFERRED (don't block)
 		if info.username and info.username ~= "Player" and (not info.userId or info.userId == 0) then
-			local ok, uid = pcall(function()
-				return Players:GetUserIdFromNameAsync(info.username)
+			task.spawn(function()
+				local ok, uid = pcall(function()
+					return Players:GetUserIdFromNameAsync(info.username)
+				end)
+				if ok and uid then info.userId = uid end
 			end)
-			if ok and uid then info.userId = uid end
 		end
 
 		print("CLICKED: boothOwner=" .. tostring(info.username) .. " price=" .. tostring(info.price) .. " userId=" .. tostring(info.userId))
