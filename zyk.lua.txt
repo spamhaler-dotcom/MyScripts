@@ -1756,7 +1756,8 @@ local function showPurchaseUI(data)
 	-- Update data
 	-- Update data
 	-- FIX: name = display name (e.g. "rato"), username = @handle (e.g. "polobruna")
-	playerNameLbl.Text = data.username or "Player Name"
+	-- data.name = display name (e.g. "Callie123"), data.username = @handle (e.g. "callie123")
+	playerNameLbl.Text = data.name ~= "Donation" and data.name or (data.username or "Player Name")
 	userHandleLbl.Text = "@" .. (data.username or "Playername")
 	amountText.Text = fmt(data.price or 0)
 
@@ -1968,31 +1969,78 @@ local function hookBtn(btn)
 
 	ov.MouseButton1Click:Connect(function()
 		local cid = getButtonId(btn) or id
-		-- Force username from visible text BEFORE getInfo runs
+		-- Force username from BOOTH CONTEXT — not random screen text
 		local forcedUsername = nil
+		local forcedDisplayName = nil
 		local forcedUserId = nil
 
-		-- Try to grab username directly from this button's context
+		-- Walk UP from the button to find the booth/player container
 		pcall(function()
-			for _, d in pairs(btn:GetDescendants()) do
-				if d:IsA("TextLabel") and d.Text and d.Visible then
-					local m = d.Text:match("@([%w_]+)")
-					if m and #m >= 3 then forcedUsername = m; break end
+			local cur = btn
+			for _ = 1, 15 do
+				if not cur then break end
+
+				-- Check this ancestor for name labels (booth owner name is usually here)
+				for _, d in pairs(cur:GetChildren()) do
+					if d:IsA("TextLabel") or d:IsA("TextButton") then
+						if d.Text and d.Visible then
+							-- Look for @username pattern
+							local m = d.Text:match("@([%w_]+)")
+							if m and #m >= 3 and m:lower() ~= "playername" then
+								forcedUsername = m
+							end
+							-- Look for display name (booth title, player name header, etc.)
+							if d.Name:lower():find("name") or d.Name:lower():find("title") or d.Name:lower():find("owner") or d.Name:lower():find("player") or d.Name:lower():find("booth") then
+								if d.Text and #d.Text > 0 and d.Text ~= "Donation" and not d.Text:find("@") then
+									forcedDisplayName = d.Text
+								end
+							end
+							-- CreatorId attribute on this ancestor
+							local cid2 = d:GetAttribute("CreatorId")
+							if cid2 and cid2 > 0 then
+								forcedUserId = cid2
+							end
+						end
+					end
 				end
+
+				-- Also check attributes on the ancestor itself
+				local attrCid = cur:GetAttribute("CreatorId")
+				if attrCid and attrCid > 0 then
+					forcedUserId = attrCid
+				end
+				local attrName = cur:GetAttribute("CreatorName")
+				if attrName and attrName ~= "" and attrName ~= "Donation" then
+					forcedUsername = attrName
+				end
+
+				-- Stop if we found both username and userId
+				if forcedUsername and forcedUserId then break end
+
+				cur = cur.Parent
 			end
 		end)
+
+		-- Fallback: only use getUsernameCtx if booth walk found nothing
 		if not forcedUsername then
 			local u = getUsernameCtx(btn)
 			if u then forcedUsername = u end
 		end
 
 		local info = getInfo(btn, 0, cid)
+		local info = getInfo(btn, 0, cid)
 		if forcedUsername and forcedUsername ~= "" then
 			info.username = forcedUsername
 		end
+		if forcedDisplayName and forcedDisplayName ~= "" then
+			info.name = forcedDisplayName  -- Use booth owner's display name
+		end
+		if forcedUserId and forcedUserId > 0 then
+			info.userId = forcedUserId
+		end
 
-		-- Try to resolve userId from username for avatar
-		if info.username and info.username ~= "Player" and not info.userId then
+		-- Try to resolve userId from username for avatar (if still missing)
+		if info.username and info.username ~= "Player" and (not info.userId or info.userId == 0) then
 			local ok, uid = pcall(function()
 				return Players:GetUserIdFromNameAsync(info.username)
 			end)
