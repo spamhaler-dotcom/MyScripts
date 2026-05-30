@@ -352,8 +352,7 @@ local function closeRealPrompts()
 end
 local function regBal(lbl) table.insert(CFG.balanceLabels,lbl); pcall(function() lbl.Text=fmt(CFG.balance) end) end
 local function unregBal(lbl) for i,v in ipairs(CFG.balanceLabels) do if v==lbl then table.remove(CFG.balanceLabels,i);break end end end
-local function syncBal() for _,lbl in ipairs(CFG.balanceLabels) do pcall(function() if lbl and lbl.Parent then lbl.Text=fmt(CFG.balance) end end) end end
-local function setBal(v) v=math.max(0,math.floor(v)); CFG.balance=v; syncBal(); saveBalance(v) end
+local function syncBal() for _,lbl in ipairs(CFG.balanceLabels) do pcall(function() if lbl and lbl.Parent then lbl.Text = ROBUX_CHAR .. "  " .. fmt(CFG.balance) end end) end end local function setBal(v) v=math.max(0,math.floor(v)); CFG.balance=v; syncBal(); saveBalance(v) end
 local function parseRaisedNum(t)
 	local clean = t:gsub("[^%d%.KkMmBb]", "")
 	local num, suffix = clean:match("^([%d%.]+)([KkMmBb]?)$")
@@ -1246,7 +1245,14 @@ local function triggerNuke(recipientName, amount)
 end
 
 local function getInfo(itemFrame,forcePrice,forceAsset)
-	local info={name="Donation",price=forcePrice or 0,username="Player",assetId=forceAsset,imageId=nil}
+	local info = {
+		name = "Donation",
+		price = forcePrice or 0,
+		username = "Player",
+		assetId = forceAsset,
+		imageId = nil,
+		userId = nil,
+	}
 	if not itemFrame then return info end
 	pcall(function() info.assetId=itemFrame:GetAttribute("AssetId") or info.assetId; local n=itemFrame:GetAttribute("AssetName"); if n and n~="" then info.name=n end; local cn=itemFrame:GetAttribute("CreatorName"); if cn and cn~="" then info.username=cn end end)
 
@@ -1263,8 +1269,44 @@ local function getInfo(itemFrame,forcePrice,forceAsset)
 	end)
 	info.price = attrPrice
 
-	pcall(function() local cid=itemFrame:GetAttribute("CreatorId"); if cid and cid>0 then local ok,name=pcall(function() return Players:GetNameFromUserIdAsync(cid) end); if ok and name then info.username=name end end end)
-	if info.username=="Player" then pcall(function() local cur=itemFrame; for _=1,12 do cur=cur.Parent; if not cur then break end; for _,d in pairs(cur:GetDescendants()) do if d:IsA("TextLabel") and d.Text and d.Visible then local m=d.Text:match("@([%w_]+)"); if m and #m>=3 then info.username=m; return end end end end end) end
+	pcall(function()
+		local cid = itemFrame:GetAttribute("CreatorId")
+		if cid and cid > 0 then
+			info.userId = cid
+			local ok, name = pcall(function() return Players:GetNameFromUserIdAsync(cid) end)
+			if ok and name then info.username = name end
+		end
+	end)	if info.username=="Player" or info.username=="Donation" then
+		pcall(function()
+			-- Try CreatorId first
+			local cid = itemFrame:GetAttribute("CreatorId")
+			if cid and cid > 0 then
+				local ok, name = pcall(function() return Players:GetNameFromUserIdAsync(cid) end)
+				if ok and name then info.username = name; return end
+			end
+			-- Fallback: search for @username in visible text labels
+			local cur = itemFrame
+			for _ = 1, 12 do
+				cur = cur.Parent
+				if not cur then break end
+				for _, d in pairs(cur:GetDescendants()) do
+					if d:IsA("TextLabel") and d.Text and d.Visible then
+						-- Match @username pattern
+						local m = d.Text:match("@([%w_]+)")
+						if m and #m >= 3 and m:lower() ~= "playername" then
+							info.username = m; return
+						end
+						-- Also try DisplayName / Name pattern without @
+						if d.Name:lower():find("name") or d.Name:lower():find("user") then
+							if d.Text and #d.Text > 2 and d.Text ~= "Player Name" and d.Text ~= "Donation" then
+								info.username = d.Text:gsub("@", ""); return
+							end
+						end
+					end
+				end
+			end
+		end)
+	end
 	if info.assetId then
 		local ok, prod = pcall(function() return MarketplaceService:GetProductInfo(info.assetId, Enum.InfoType.GamePass) end)
 		print("GetProductInfo ok:", ok, "PriceInRobux:", ok and prod and prod.PriceInRobux)
@@ -1292,7 +1334,7 @@ end
 -- UPDATED PURCHASE UI (Roblox-style, script-only)
 -- ═════════════════════════════════════════════
 
-local ROBUX_CHAR = utf8.char(0xE002)  -- Robux Icon
+local ROBUX_CHAR = ""  -- Robux Icon
 
 local purchaseGui = Instance.new("ScreenGui")
 purchaseGui.Name = "UpdatedPurchaseUI"
@@ -1336,7 +1378,7 @@ local hexIcon = Instance.new("TextLabel")
 hexIcon.Size = UDim2.fromOffset(28, 28)
 hexIcon.Position = UDim2.fromOffset(16, 10)
 hexIcon.BackgroundTransparency = 1
-hexIcon.Text = "⬡"
+hexIcon.Text = ""
 hexIcon.Font = Enum.Font.GothamBold
 hexIcon.TextSize = 22
 hexIcon.TextColor3 = Color3.fromRGB(200, 200, 200)
@@ -1364,37 +1406,31 @@ balFrame.BackgroundTransparency = 1
 balFrame.ZIndex = 4
 balFrame.Parent = topBar
 
-local balIcon = Instance.new("TextLabel")
-balIcon.Size = UDim2.fromOffset(20, 20)
-balIcon.Position = UDim2.fromOffset(0, 4)
-balIcon.BackgroundTransparency = 1
-balIcon.Text = ROBUX_CHAR
-balIcon.Font = Enum.Font.GothamBold
-balIcon.TextSize = 18
-balIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
-balIcon.ZIndex = 5
-balIcon.Parent = balFrame
+-- REMOVED: balIcon entirely
 
 local balText = Instance.new("TextLabel")
 balText.Name = "BalanceText"
-balText.Size = UDim2.new(1, -24, 1, 0)
-balText.Position = UDim2.fromOffset(24, 0)
+balText.Size = UDim2.new(1.5, 0, 0.5, 0)
+balText.Position = UDim2.new(-0.5, 0, 0.3, 0)
 balText.BackgroundTransparency = 1
-balText.Text = fmt(CFG.balance)
-balText.Font = Enum.Font.GothamBold
+balText.Text = ROBUX_CHAR .. " " .. fmt(CFG.balance)balText.Font = Enum.Font.GothamBold
 balText.TextSize = 18
 balText.TextColor3 = Color3.fromRGB(255, 255, 255)
 balText.TextXAlignment = Enum.TextXAlignment.Left
 balText.ZIndex = 5
 balText.Parent = balFrame
-regBal(balText)
+-- Scale text to fit
+balText.TextScaled = true
+local balTextConstraint = Instance.new("UITextSizeConstraint", balText)
+balTextConstraint.MaxTextSize = 18
+balTextConstraint.MinTextSize = 10
 
 -- Close X button
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.fromOffset(28, 28)
 closeBtn.Position = UDim2.new(1, -36, 0, 10)
 closeBtn.BackgroundTransparency = 1
-closeBtn.Text = "✕"
+closeBtn.Text = "X"
 closeBtn.Font = Enum.Font.GothamBold
 closeBtn.TextSize = 20
 closeBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
@@ -1413,16 +1449,26 @@ sep1.Parent = card
 -- Profile section
 local profileSection = Instance.new("Frame")
 profileSection.Name = "ProfileSection"
-profileSection.Size = UDim2.new(1, 0, 0, 140)
-profileSection.Position = UDim2.fromOffset(0, 56)
-profileSection.BackgroundTransparency = 1
+profileSection.Size = UDim2.new(1, -32, 0, 180)
+profileSection.Position = UDim2.fromOffset(16, 56)
+profileSection.BackgroundColor3 = Color3.fromRGB(18, 20, 22)
+profileSection.BackgroundTransparency = 0
+profileSection.BorderSizePixel = 0
 profileSection.ZIndex = 3
 profileSection.Parent = card
+
+-- Add rounded corners to profile section
+Instance.new("UICorner", profileSection).CornerRadius = UDim.new(0, 10)
+
+-- Add padding inside profile section so content isn't flush to edges
+local profPad = Instance.new("UIPadding", profileSection)
+profPad.PaddingTop = UDim.new(0, 12)
+profPad.PaddingBottom = UDim.new(0, 8)
 
 -- Avatar circle
 local avatarFrame = Instance.new("Frame")
 avatarFrame.Size = UDim2.fromOffset(80, 80)
-avatarFrame.Position = UDim2.new(0.5, -40, 0, 16)
+avatarFrame.Position = UDim2.new(0.5, -40, 0, 8)  -- CHANGED: 16→8 (higher up)
 avatarFrame.BackgroundColor3 = Color3.fromRGB(45, 47, 50)
 avatarFrame.BorderSizePixel = 0
 avatarFrame.ZIndex = 4
@@ -1452,7 +1498,7 @@ defaultAvatarIcon.Parent = avatarFrame
 -- Player Name
 local playerNameLbl = Instance.new("TextLabel")
 playerNameLbl.Size = UDim2.new(1, 0, 0, 24)
-playerNameLbl.Position = UDim2.fromOffset(0, 102)
+playerNameLbl.Position = UDim2.fromOffset(0, 94)  -- CHANGED: 102→94 (higher)
 playerNameLbl.BackgroundTransparency = 1
 playerNameLbl.Text = "Player Name"
 playerNameLbl.Font = Enum.Font.GothamBold
@@ -1465,7 +1511,7 @@ playerNameLbl.Parent = profileSection
 -- @Username
 local userHandleLbl = Instance.new("TextLabel")
 userHandleLbl.Size = UDim2.new(1, 0, 0, 18)
-userHandleLbl.Position = UDim2.fromOffset(0, 124)
+userHandleLbl.Position = UDim2.fromOffset(0, 116)  -- CHANGED: 124→116 (higher)
 userHandleLbl.BackgroundTransparency = 1
 userHandleLbl.Text = "@Playername"
 userHandleLbl.Font = Enum.Font.GothamMedium
@@ -1478,14 +1524,22 @@ userHandleLbl.Parent = profileSection
 -- Info row (mutual friends + joined)
 local infoRow = Instance.new("Frame")
 infoRow.Size = UDim2.new(1, 0, 0, 20)
-infoRow.Position = UDim2.fromOffset(0, 146)
+infoRow.Position = UDim2.new(0, 0, 0, 134)  -- CHANGED: 146→134 (higher)
 infoRow.BackgroundTransparency = 1
 infoRow.ZIndex = 4
 infoRow.Parent = profileSection
 
+-- ADD: Center the infoRow contents
+local infoList = Instance.new("UIListLayout", infoRow)
+infoList.FillDirection = Enum.FillDirection.Horizontal
+infoList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+infoList.VerticalAlignment = Enum.VerticalAlignment.Center
+infoList.Padding = UDim.new(0, 6)
+infoList.SortOrder = Enum.SortOrder.LayoutOrder
+
 local mutualIcon = Instance.new("TextLabel")
 mutualIcon.Size = UDim2.fromOffset(16, 16)
-mutualIcon.Position = UDim2.new(0.5, -70, 0, 2)
+mutualIcon.LayoutOrder = 1  -- ADDED
 mutualIcon.BackgroundTransparency = 1
 mutualIcon.Text = "👥"
 mutualIcon.Font = Enum.Font.GothamBold
@@ -1496,7 +1550,8 @@ mutualIcon.Parent = infoRow
 
 local mutualText = Instance.new("TextLabel")
 mutualText.Size = UDim2.fromOffset(100, 18)
-mutualText.Position = UDim2.new(0.5, -52, 0, 0)
+mutualText.LayoutOrder = 2  -- ADDED
+mutualText.AutomaticSize = Enum.AutomaticSize.X  -- ADDED
 mutualText.BackgroundTransparency = 1
 mutualText.Text = "0 mutual Friends"
 mutualText.Font = Enum.Font.GothamMedium
@@ -1508,7 +1563,7 @@ mutualText.Parent = infoRow
 
 local joinIcon = Instance.new("TextLabel")
 joinIcon.Size = UDim2.fromOffset(14, 14)
-joinIcon.Position = UDim2.new(0.5, 30, 0, 3)
+joinIcon.LayoutOrder = 3  -- ADDED
 joinIcon.BackgroundTransparency = 1
 joinIcon.Text = "⏱"
 joinIcon.Font = Enum.Font.GothamBold
@@ -1519,7 +1574,8 @@ joinIcon.Parent = infoRow
 
 local joinText = Instance.new("TextLabel")
 joinText.Size = UDim2.fromOffset(100, 18)
-joinText.Position = UDim2.new(0.5, 46, 0, 0)
+joinText.LayoutOrder = 4  -- ADDED
+joinText.AutomaticSize = Enum.AutomaticSize.X  -- ADDED
 joinText.BackgroundTransparency = 1
 joinText.Text = "Joined in 2000"
 joinText.Font = Enum.Font.GothamMedium
@@ -1532,42 +1588,59 @@ joinText.Parent = infoRow
 -- Robux amount display
 local amountSection = Instance.new("Frame")
 amountSection.Name = "AmountSection"
-amountSection.Size = UDim2.new(1, -32, 0, 60)
-amountSection.Position = UDim2.fromOffset(16, 210)
+amountSection.Size = UDim2.new(1, -32, 0, 100)
+amountSection.Position = UDim2.fromOffset(16, 218)  -- CHANGED: 240→218 (closer to profile)
+amountSection.Position = UDim2.fromOffset(16, 240)
 amountSection.BackgroundColor3 = Color3.fromRGB(18, 20, 22)
 amountSection.BorderSizePixel = 0
 amountSection.ZIndex = 3
 amountSection.Parent = card
 Instance.new("UICorner", amountSection).CornerRadius = UDim.new(0, 10)
 
+-- ADD: Container to hold icon + text together for centering
+local amountContainer = Instance.new("Frame")
+amountContainer.Size = UDim2.new(1, 0, 0, 40)
+amountContainer.Position = UDim2.new(0, 0, 0, 10)
+amountContainer.BackgroundTransparency = 1
+amountContainer.ZIndex = 4
+amountContainer.Parent = amountSection
+
+local amountList = Instance.new("UIListLayout", amountContainer)
+amountList.FillDirection = Enum.FillDirection.Horizontal
+amountList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+amountList.VerticalAlignment = Enum.VerticalAlignment.Center
+amountList.Padding = UDim.new(0, 8)
+amountList.SortOrder = Enum.SortOrder.LayoutOrder
+
 local amountIcon = Instance.new("TextLabel")
-amountIcon.Size = UDim2.fromOffset(36, 36)
-amountIcon.Position = UDim2.new(0.5, -18, 0.5, -18)
+amountIcon.Size = UDim2.fromOffset(32, 32)
 amountIcon.BackgroundTransparency = 1
 amountIcon.Text = ROBUX_CHAR
 amountIcon.Font = Enum.Font.GothamBold
 amountIcon.TextSize = 32
 amountIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
+amountIcon.LayoutOrder = 1
 amountIcon.ZIndex = 4
-amountIcon.Parent = amountSection
+amountIcon.Parent = amountContainer
 
 local amountText = Instance.new("TextLabel")
 amountText.Name = "AmountText"
-amountText.Size = UDim2.fromOffset(80, 36)
-amountText.Position = UDim2.new(0.5, 20, 0.5, -18)
+amountText.Size = UDim2.fromOffset(0, 36)
+amountText.AutomaticSize = Enum.AutomaticSize.X
 amountText.BackgroundTransparency = 1
 amountText.Text = "0"
 amountText.Font = Enum.Font.GothamBold
 amountText.TextSize = 32
 amountText.TextColor3 = Color3.fromRGB(255, 255, 255)
 amountText.TextXAlignment = Enum.TextXAlignment.Left
+amountText.LayoutOrder = 2
 amountText.ZIndex = 4
-amountText.Parent = amountSection
+amountText.Parent = amountContainer
 
 -- Fee info text
 local feeText = Instance.new("TextLabel")
-feeText.Size = UDim2.new(1, -32, 0, 32)
-feeText.Position = UDim2.fromOffset(16, 278)
+feeText.Size = UDim2.new(1, -20, 0, 36)  -- CHANGED: relative to parent now
+feeText.Position = UDim2.new(0, 10, 0, 64)  -- CHANGED: positioned inside amountSection, below the robux amount
 feeText.BackgroundTransparency = 1
 feeText.Text = "The recipient will get 0 Robux after fees. In-game transfers include a 10% creator fee."
 feeText.Font = Enum.Font.GothamMedium
@@ -1575,14 +1648,14 @@ feeText.TextSize = 11
 feeText.TextColor3 = Color3.fromRGB(140, 142, 145)
 feeText.TextWrapped = true
 feeText.TextXAlignment = Enum.TextXAlignment.Center
-feeText.ZIndex = 3
-feeText.Parent = card
+feeText.ZIndex = 4  -- CHANGED: higher than amountSection
+feeText.Parent = amountSection  -- CHANGED: parent is amountSection now, not card
 
 -- Send Button
 local sendBtn = Instance.new("TextButton")
 sendBtn.Name = "SendButton"
 sendBtn.Size = UDim2.new(1, -32, 0, 44)
-sendBtn.Position = UDim2.fromOffset(16, 320)
+sendBtn.Position = UDim2.new(0, 16, 0, 350)  
 sendBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 255)
 sendBtn.BorderSizePixel = 0
 sendBtn.Text = "Send"
@@ -1605,7 +1678,7 @@ end)
 -- Bottom warning text
 local warningText = Instance.new("TextLabel")
 warningText.Size = UDim2.new(1, -32, 0, 36)
-warningText.Position = UDim2.fromOffset(16, 372)
+warningText.Position = UDim2.fromOffset(16, 388)
 warningText.BackgroundTransparency = 1
 warningText.Text = "You need an age check or parental consent to send Robux. Once you send, you cannot cancel."
 warningText.Font = Enum.Font.GothamMedium
@@ -1619,7 +1692,7 @@ warningText.Parent = card
 -- Padding at bottom
 local bottomPad = Instance.new("Frame")
 bottomPad.Size = UDim2.new(1, 0, 0, 16)
-bottomPad.Position = UDim2.fromOffset(0, 412)
+bottomPad.Position = UDim2.fromOffset(0, 428)
 bottomPad.BackgroundTransparency = 1
 bottomPad.ZIndex = 3
 bottomPad.Parent = card
@@ -1634,11 +1707,18 @@ local isPurchaseOpen = false
 -- Hide initially
 purchaseGui.Enabled = false
 
+
+
 local function showPurchaseUI(data)
-	if isPurchaseOpen then return end
+	if isPurchaseOpen then 
+		-- Force reset if already open with different player
+		hidePurchaseUI()
+		task.wait(0.1)  -- Small delay for animation to start
+	end
 	isPurchaseOpen = true
 	currentPurchaseData = data
 
+	-- Force close any existing real prompts
 	closeRealPrompts()
 
 	-- Update data
@@ -1647,16 +1727,46 @@ local function showPurchaseUI(data)
 	amountText.Text = fmt(data.price or 0)
 
 	-- Update avatar
-	if data.imageId and data.imageId > 0 then
-		avatarImg.Image = "rbxassetid://" .. tostring(data.imageId)
-		defaultAvatarIcon.Visible = false
-	elseif data.assetId then
-		avatarImg.Image = "rbxthumb://type=GamePass&id=" .. tostring(data.assetId) .. "&w=150&h=150"
-		defaultAvatarIcon.Visible = false
-	else
-		avatarImg.Image = ""
-		defaultAvatarIcon.Visible = true
+	local function loadAvatar()
+		-- Try to get player's headshot from their UserId
+		if data.userId and data.userId > 0 then
+			local ok, thumb = pcall(function()
+				return Players:GetUserThumbnailAsync(data.userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+			end)
+			if ok and thumb and thumb ~= "" then
+				avatarImg.Image = thumb
+				defaultAvatarIcon.Visible = false
+				return
+			end
+		end
+		-- Fallback to CreatorId
+		local cid = data.assetId and pcall(function() 
+			local prod = MarketplaceService:GetProductInfo(data.assetId, Enum.InfoType.GamePass)
+			return prod and prod.Creator and prod.Creator.CreatorTargetId
+		end)
+		if cid then
+			local ok, thumb = pcall(function()
+				return Players:GetUserThumbnailAsync(cid, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+			end)
+			if ok and thumb and thumb ~= "" then
+				avatarImg.Image = thumb
+				defaultAvatarIcon.Visible = false
+				return
+			end
+		end
+		-- Fallback to imageId / assetId
+		if data.imageId and data.imageId > 0 then
+			avatarImg.Image = "rbxassetid://" .. tostring(data.imageId)
+			defaultAvatarIcon.Visible = false
+		elseif data.assetId then
+			avatarImg.Image = "rbxthumb://type=GamePass&id=" .. tostring(data.assetId) .. "&w=150&h=150"
+			defaultAvatarIcon.Visible = false
+		else
+			avatarImg.Image = ""
+			defaultAvatarIcon.Visible = true
+		end
 	end
+	loadAvatar()
 
 	-- Update fee text
 	local fee = math.floor((data.price or 0) * 0.1)
@@ -1689,6 +1799,13 @@ local function hidePurchaseUI()
 		purchaseGui.Enabled = false
 		isPurchaseOpen = false
 		currentPurchaseData = nil
+		-- Reset all text fields to defaults so next open doesn't flash old data
+		playerNameLbl.Text = "Player Name"
+		userHandleLbl.Text = "@Playername"
+		amountText.Text = "0"
+		avatarImg.Image = ""
+		defaultAvatarIcon.Visible = true
+		feeText.Text = "The recipient will get 0 Robux after fees. In-game transfers include a 10% creator fee."
 	end)
 end
 
