@@ -1265,7 +1265,16 @@ end)
 info.price = attrPrice
     
     pcall(function() local cid=itemFrame:GetAttribute("CreatorId"); if cid and cid>0 then local ok,name=pcall(function() return Players:GetNameFromUserIdAsync(cid) end); if ok and name then info.username=name end end end)
-    if info.username=="Player" then pcall(function() local cur=itemFrame; for _=1,12 do cur=cur.Parent; if not cur then break end; for _,d in pairs(cur:GetDescendants()) do if d:IsA("TextLabel") and d.Text and d.Visible then local m=d.Text:match("@([%w_]+)"); if m and #m>=3 then info.username=m; return end end end end end) end
+	-- Try to get username from context if still "Player"
+	if info.username == "Player" or info.username == "Playername" or info.username == "" then
+		local u = getUsernameCtx(itemFrame)
+		if u then info.username = u end
+	end
+
+	-- If name is still generic "Donation", use the username we found
+	if info.name == "Donation" and info.username ~= "Player" and info.username ~= "Playername" then
+		info.name = info.username
+	end
     if info.assetId then
         local ok, prod = pcall(function() return MarketplaceService:GetProductInfo(info.assetId, Enum.InfoType.GamePass) end)
         print("GetProductInfo ok:", ok, "PriceInRobux:", ok and prod and prod.PriceInRobux)
@@ -1589,7 +1598,8 @@ amountText.Parent = amountContainer
 
 local feeText = Instance.new("TextLabel")
 feeText.Size = UDim2.new(1, -20, 0, 36)
-feeText.Position = UDim2.new(0, 10, 0, 64)
+feeText.Position = UDim2.new(0, 10, 0, 55)
+feeText.Size = UDim2.new(1, -20, 0, 40)
 feeText.BackgroundTransparency = 1
 feeText.Text = "The recipient will get 0 Robux after fees. In-game transfers include a 10% creator fee."
 feeText.Font = Enum.Font.GothamMedium
@@ -1604,7 +1614,7 @@ feeText.Parent = amountSection
 local sendBtn = Instance.new("TextButton")
 sendBtn.Name = "SendButton"
 sendBtn.Size = UDim2.new(1, -32, 0, 44)
-sendBtn.Position = UDim2.new(0, 16, 0, 350)
+sendBtn.Position = UDim2.new(0, 16, 0, 348)
 sendBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 255)
 sendBtn.BorderSizePixel = 0
 sendBtn.Text = "Send"
@@ -1625,7 +1635,7 @@ end)
 
 local warningText = Instance.new("TextLabel")
 warningText.Size = UDim2.new(1, -32, 0, 36)
-warningText.Position = UDim2.fromOffset(16, 388)
+warningText.Position = UDim2.fromOffset(16, 396)
 warningText.BackgroundTransparency = 1
 warningText.Text = "You need an age check or parental consent to send Robux. Once you send, you cannot cancel."
 warningText.Font = Enum.Font.GothamMedium
@@ -1638,7 +1648,7 @@ warningText.Parent = card
 
 local bottomPad = Instance.new("Frame")
 bottomPad.Size = UDim2.new(1, 0, 0, 16)
-bottomPad.Position = UDim2.fromOffset(0, 428)
+bottomPad.Position = UDim2.fromOffset(0, 432)
 bottomPad.BackgroundTransparency = 1
 bottomPad.ZIndex = 3
 bottomPad.Parent = card
@@ -1652,10 +1662,13 @@ local isPurchaseOpen = false
 purchaseGui.Enabled = false
 
 local function showPurchaseUI(data)
+	-- Force close any existing UI first
 	if isPurchaseOpen then 
-		hidePurchaseUI()
-		task.wait(0.1)
+		purchaseGui.Enabled = false
+		isPurchaseOpen = false
+		currentPurchaseData = nil
 	end
+	task.wait(0.05)
 	isPurchaseOpen = true
 	currentPurchaseData = data
 
@@ -1677,11 +1690,23 @@ local function showPurchaseUI(data)
 		local targetUserId = data.userId
 		local targetUsername = cleanUsername
 
+		-- First: try to find player in-game by username
+		if targetUsername and targetUsername ~= "Player" and targetUsername ~= "Playername" then
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p.Name:lower() == targetUsername:lower() or p.DisplayName:lower() == targetUsername:lower() then
+					targetUserId = p.UserId
+					break
+				end
+			end
+		end
+
+		-- Second: try GetUserIdFromNameAsync (for offline players)
 		if not targetUserId and targetUsername and targetUsername ~= "Player" and targetUsername ~= "Playername" then
 			local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(targetUsername) end)
 			if ok and uid then targetUserId = uid end
 		end
 
+		-- Load avatar headshot
 		if targetUserId then
 			local ok, thumb = pcall(function()
 				return Players:GetUserThumbnailAsync(targetUserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
@@ -1693,6 +1718,7 @@ local function showPurchaseUI(data)
 			end
 		end
 
+		-- Fallbacks
 		if data.imageId and data.imageId > 0 then
 			avatarImg.Image = "rbxassetid://" .. tostring(data.imageId)
 			defaultAvatarIcon.Visible = false
@@ -1710,7 +1736,7 @@ local function showPurchaseUI(data)
 	feeText.Text = "The recipient will get " .. fmt(afterFee) .. " Robux after fees. In-game transfers include a 10% creator fee."
 
 	purchaseGui.Enabled = true
-	overlay.BackgroundTransparency = 1
+	overlay.BackgroundTransparency = 0.4  -- start visible
 	card.Position = UDim2.new(0.5, 0, 0.55, 0)
 	card.BackgroundTransparency = 0.1
 
@@ -1824,7 +1850,47 @@ end
 
 
 local function getButtonId(obj) for name,val in pairs(obj:GetAttributes()) do if (name:lower():find("id")or name:lower():find("asset")) and type(val)=="number" then return val end end; for _,c in ipairs(obj:GetChildren()) do if (c.Name:lower():find("id")or c.Name:lower():find("asset")) and (c:IsA("NumberValue")or c:IsA("IntValue")) then return c.Value end end; if tonumber(obj.Name) then return tonumber(obj.Name) end; local id=obj.Name:match("Item(%d+)"); if id then return tonumber(id) end; if obj.Parent then local pid=obj.Parent.Name:match("Item(%d+)"); if pid then return tonumber(pid) end end; return nil end
-local function getUsernameCtx(btn) for _,c in ipairs(btn:GetDescendants()) do if (c:IsA("TextLabel")or c:IsA("TextButton")) and c.Text then local u=c.Text:match("@([%w_]+)"); if u then return u end end end; local cur=btn; for _=1,10 do cur=cur.Parent; if not cur then break end; for _,d in pairs(cur:GetDescendants()) do if d:IsA("TextLabel") and d.Text and d.Visible then local m=d.Text:match("@([%w_]+)"); if m and #m>=3 then return m end end end end; return nil end
+local function getUsernameCtx(btn)
+	-- Check button itself and immediate children
+	if btn:IsA("TextLabel") or btn:IsA("TextButton") then
+		local u = btn.Text:match("@([%w_]+)")
+		if u then return u end
+	end
+	for _, c in ipairs(btn:GetChildren()) do
+		if (c:IsA("TextLabel") or c:IsA("TextButton")) and c.Text then
+			local u = c.Text:match("@([%w_]+)")
+			if u then return u end
+		end
+	end
+
+	-- Walk up the hierarchy looking for owner labels
+	local cur = btn
+	for depth = 1, 15 do
+		cur = cur.Parent
+		if not cur then break end
+		if cur:IsA("ScreenGui") then break end
+
+		-- Check ALL descendants of current ancestor (not just children)
+		for _, d in ipairs(cur:GetDescendants()) do
+			if d:IsA("TextLabel") and d.Text then
+				-- Match @username pattern
+				local m = d.Text:match("@([%w_]+)")
+				if m and #m >= 3 then
+					-- Validate: must look like a real username (not "Raised" etc)
+					if m:lower() ~= "raised" and m:lower() ~= "donated" and m:lower() ~= "player" then
+						return m
+					end
+				end
+			end
+		end
+
+		-- Check attributes on the ancestor itself
+		local attr = cur:GetAttribute("OwnerName") or cur:GetAttribute("PlayerName") 
+			or cur:GetAttribute("BoothOwner") or cur:GetAttribute("CreatorName")
+		if attr and #attr >= 3 then return attr end
+	end
+	return nil
+end
 local function hookBtn(btn)
     if not (btn:IsA("TextButton")or btn:IsA("ImageButton")) then return end; if btn:FindFirstChild("__FD_Ov") then return end
     local id=getButtonId(btn); if not id then return end
@@ -1848,8 +1914,7 @@ local function hookBtn(btn)
         })
         return
     end
-    openPrompt(info)
-end)
+	activePrompt.open(info)end)
 end
 local function setupIF(f) if not f or CFG.processedFrames[f] then return end; CFG.processedFrames[f]=true; if f:IsA("TextButton")or f:IsA("ImageButton") then hookBtn(f) else for _,c in ipairs(f:GetDescendants()) do if (c:IsA("TextButton")or c:IsA("ImageButton")) and not c:FindFirstChild("__FD_Ov") then if getButtonId(c) then hookBtn(c) end end end end end
 task.spawn(function() task.wait(2); for _,f in pairs(CollectionService:GetTagged("ItemFrame")) do pcall(function() setupIF(f) end) end; for _,obj in ipairs(playerGui:GetDescendants()) do pcall(function() if (obj:IsA("TextButton")or obj:IsA("ImageButton")) and not obj:FindFirstChild("__FD_Ov") then if getButtonId(obj) then hookBtn(obj) end end end) end end)
