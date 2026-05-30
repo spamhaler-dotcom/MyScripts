@@ -1245,46 +1245,74 @@ local function triggerNuke(recipientName, amount)
 	end)
 end
 
-local function getInfo(itemFrame,forcePrice,forceAsset)
-	local info={name="Donation",price=forcePrice or 0,username="Player",assetId=forceAsset,imageId=nil}
+local function getInfo(itemFrame, forcePrice, forceAsset)
+	local info = {name = "Donation", price = forcePrice or 0, username = "Player", assetId = forceAsset, imageId = nil}
 	if not itemFrame then return info end
-	pcall(function() info.assetId=itemFrame:GetAttribute("AssetId") or info.assetId; local n=itemFrame:GetAttribute("AssetName"); if n and n~="" then info.name=n end; local cn=itemFrame:GetAttribute("CreatorName"); if cn and cn~="" then info.username=cn end end)
 
-	-- read attribute price before GetProductInfo overwrites it
+	-- Read attributes from the itemFrame itself
+	pcall(function()
+		info.assetId = itemFrame:GetAttribute("AssetId") or info.assetId
+		local n = itemFrame:GetAttribute("AssetName")
+		if n and n ~= "" then info.name = n end
+		local cn = itemFrame:GetAttribute("CreatorName")
+		if cn and cn ~= "" then info.username = cn end
+	end)
+
+	-- Read AssetPrice from itemFrame OR walk up parents looking for it
 	local attrPrice = 0
 	pcall(function()
 		local cur = itemFrame
-		for _ = 1, 8 do
+		for _ = 1, 12 do
 			local v = cur:GetAttribute("AssetPrice")
-			if v and v > 0 then attrPrice = v; break end
+			if v and tonumber(v) and tonumber(v) > 0 then
+				attrPrice = tonumber(v)
+				break
+			end
 			if not cur.Parent then break end
 			cur = cur.Parent
 		end
 	end)
 	info.price = attrPrice
 
-	pcall(function() local cid=itemFrame:GetAttribute("CreatorId"); if cid and cid>0 then local ok,name=pcall(function() return Players:GetNameFromUserIdAsync(cid) end); if ok and name then info.username=name end end end)
-	if info.username=="Player" then pcall(function() local cur=itemFrame; for _=1,12 do cur=cur.Parent; if not cur then break end; for _,d in pairs(cur:GetDescendants()) do if d:IsA("TextLabel") and d.Text and d.Visible then local m=d.Text:match("@([%w_]+)"); if m and #m>=3 then info.username=m; return end end end end end) end
+	-- Try to get CreatorId -> username
+	pcall(function()
+		local cid = itemFrame:GetAttribute("CreatorId")
+		if cid and cid > 0 then
+			local ok, name = pcall(function() return Players:GetNameFromUserIdAsync(cid) end)
+			if ok and name then info.username = name end
+		end
+	end)
+
+	-- If username is still generic, try context search
+	if info.username == "Player" or info.username == "Playername" or info.username == "" then
+		local u = getUsernameCtx(itemFrame)
+		if u then info.username = u end
+	end
+
+	-- If name is still generic, use username
+	if info.name == "Donation" and info.username ~= "Player" and info.username ~= "Playername" and info.username ~= "" then
+		info.name = info.username
+	end
+
+	-- Try MarketplaceService for extra info (but DON'T let it overwrite our attrPrice)
 	if info.assetId then
-		local ok, prod = pcall(function() return MarketplaceService:GetProductInfo(info.assetId, Enum.InfoType.GamePass) end)
+		local ok, prod = pcall(function()
+			return MarketplaceService:GetProductInfo(info.assetId, Enum.InfoType.GamePass)
+		end)
 		print("GetProductInfo ok:", ok, "PriceInRobux:", ok and prod and prod.PriceInRobux)
 		if ok and prod then
-			if prod.Name and prod.Name~="" then info.name=prod.Name end
-			if prod.IconImageAssetId and prod.IconImageAssetId>0 then info.imageId=prod.IconImageAssetId end
-			if prod.Creator and prod.Creator.Name then info.username=prod.Creator.Name end
-			if attrPrice > 0 then
-				info.price = attrPrice  -- use it directly, no division
-			elseif prod.PriceInRobux and prod.PriceInRobux > 0 then
+			if prod.Name and prod.Name ~= "" then info.name = prod.Name end
+			if prod.IconImageAssetId and prod.IconImageAssetId > 0 then info.imageId = prod.IconImageAssetId end
+			if prod.Creator and prod.Creator.Name then info.username = prod.Creator.Name end
+
+			-- ONLY use ProductInfo price if we couldn't find an attribute price
+			if info.price == 0 and prod.PriceInRobux and prod.PriceInRobux > 0 then
 				info.price = prod.PriceInRobux
-			end
-		else
-			-- GetProductInfo failed, reverse the 40% cut
-			if attrPrice > 0 then
-				info.price = attrPrice
 			end
 		end
 	end
-	print("Final price:", info.price, "assetId:", info.assetId)
+
+	print("Final price:", info.price, "assetId:", info.assetId, "username:", info.username)
 	return info
 end
 
@@ -1688,20 +1716,24 @@ local function showPurchaseUI(data)
 		local targetUserId = data.userId
 		local targetUsername = cleanUsername
 
+		-- First: try to resolve username to UserId for avatar
 		if targetUsername and targetUsername ~= "Player" and targetUsername ~= "Playername" then
+			-- Check if player is in-game
 			for _, p in ipairs(Players:GetPlayers()) do
 				if p.Name:lower() == targetUsername:lower() or p.DisplayName:lower() == targetUsername:lower() then
 					targetUserId = p.UserId
 					break
 				end
 			end
+
+			-- If not in-game, try async lookup
+			if not targetUserId then
+				local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(targetUsername) end)
+				if ok and uid then targetUserId = uid end
+			end
 		end
 
-		if not targetUserId and targetUsername and targetUsername ~= "Player" and targetUsername ~= "Playername" then
-			local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(targetUsername) end)
-			if ok and uid then targetUserId = uid end
-		end
-
+		-- Load avatar headshot
 		if targetUserId then
 			local ok, thumb = pcall(function()
 				return Players:GetUserThumbnailAsync(targetUserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
@@ -1713,6 +1745,7 @@ local function showPurchaseUI(data)
 			end
 		end
 
+		-- Fallbacks: gamepass image, then generic
 		if data.imageId and data.imageId > 0 then
 			avatarImg.Image = "rbxassetid://" .. tostring(data.imageId)
 			defaultAvatarIcon.Visible = false
@@ -1838,7 +1871,54 @@ local function openPrompt(data)
 end
 
 local function getButtonId(obj) for name,val in pairs(obj:GetAttributes()) do if (name:lower():find("id")or name:lower():find("asset")) and type(val)=="number" then return val end end; for _,c in ipairs(obj:GetChildren()) do if (c.Name:lower():find("id")or c.Name:lower():find("asset")) and (c:IsA("NumberValue")or c:IsA("IntValue")) then return c.Value end end; if tonumber(obj.Name) then return tonumber(obj.Name) end; local id=obj.Name:match("Item(%d+)"); if id then return tonumber(id) end; if obj.Parent then local pid=obj.Parent.Name:match("Item(%d+)"); if pid then return tonumber(pid) end end; return nil end
-local function getUsernameCtx(btn) for _,c in ipairs(btn:GetDescendants()) do if (c:IsA("TextLabel")or c:IsA("TextButton")) and c.Text then local u=c.Text:match("@([%w_]+)"); if u then return u end end end; local cur=btn; for _=1,10 do cur=cur.Parent; if not cur then break end; for _,d in pairs(cur:GetDescendants()) do if d:IsA("TextLabel") and d.Text and d.Visible then local m=d.Text:match("@([%w_]+)"); if m and #m>=3 then return m end end end end; return nil end
+
+local function getUsernameCtx(btn)
+	-- Check button itself
+	if btn:IsA("TextLabel") or btn:IsA("TextButton") then
+		local u = btn.Text:match("@([%w_]+)")
+		if u then return u end
+	end
+
+	-- Check immediate children
+	for _, c in ipairs(btn:GetChildren()) do
+		if (c:IsA("TextLabel") or c:IsA("TextButton")) and c.Text then
+			local u = c.Text:match("@([%w_]+)")
+			if u then return u end
+		end
+	end
+
+	-- Walk up hierarchy and check ALL descendants at each level
+	local cur = btn
+	for depth = 1, 20 do
+		cur = cur.Parent
+		if not cur then break end
+		if cur:IsA("ScreenGui") then break end
+
+		-- Check ALL descendants of current ancestor
+		for _, d in ipairs(cur:GetDescendants()) do
+			if d:IsA("TextLabel") and d.Text and d.Visible then
+				-- Match @username pattern
+				local m = d.Text:match("@([%w_]+)")
+				if m and #m >= 3 then
+					-- Filter out common non-username words
+					local lower = m:lower()
+					if lower ~= "raised" and lower ~= "donated" and lower ~= "player" 
+						and lower ~= "offline" and lower ~= "online" and lower ~= "friends" then
+						return m
+					end
+				end
+			end
+		end
+
+		-- Check attributes on ancestor itself
+		local attr = cur:GetAttribute("OwnerName") or cur:GetAttribute("PlayerName") 
+			or cur:GetAttribute("BoothOwner") or cur:GetAttribute("CreatorName")
+			or cur:GetAttribute("Username") or cur:GetAttribute("UserName")
+		if attr and #attr >= 3 then return attr end
+	end
+	return nil
+end
+
 local function hookBtn(btn)
 	if not (btn:IsA("TextButton")or btn:IsA("ImageButton")) then return end; if btn:FindFirstChild("__FD_Ov") then return end
 	local id=getButtonId(btn); if not id then return end
