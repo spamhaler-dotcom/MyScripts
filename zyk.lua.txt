@@ -1255,6 +1255,8 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 		assetId = forceAsset,
 		imageId = nil,
 		userId = nil,
+		creatorName = nil,  -- ADD THIS LINE
+
 	}
 
 	if not itemFrame then return info end
@@ -1268,31 +1270,53 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 	-- This is the MOST reliable method for Pls Donate
 	pcall(function()
 		local cur = itemFrame
-		for _ = 1, 12 do
+		local maxDepth = 6  -- Reduced from 12
+		local foundBooth = false
+
+		for depth = 1, maxDepth do
 			cur = cur.Parent
 			if not cur then break end
-			for _, d in pairs(cur:GetDescendants()) do
-				if d:IsA("TextLabel") and d.Text and d.Visible then
-					local m = d.Text:match("@([%w_]+)")
-					if m and #m >= 3 and m:lower() ~= "playername" then
-						info.username = m
-						return
+
+			-- Stop if we hit the ScreenGui root or a playerlist/leaderboard
+			if cur:IsA("ScreenGui") or cur.Name:lower():find("playerlist") or cur.Name:lower():find("leaderboard") or cur.Name:lower():find("mapui") then
+				break
+			end
+
+			-- In Adopt Me, booth frames often contain the owner's name in a specific pattern
+			-- Look for the FIRST @username we find that's directly associated with this item
+			if not foundBooth then
+				-- Check direct children FIRST (more reliable than descendants)
+				for _, d in ipairs(cur:GetChildren()) do
+					if d:IsA("TextLabel") and d.Text and d.Visible then
+						local m = d.Text:match("@([%w_]+)")
+						if m and #m >= 3 and m:lower() ~= "playername" then
+							info.username = m
+							foundBooth = true
+							return
+						end
 					end
 				end
-			end
-			-- Also check direct children of current parent
-			for _, d in pairs(cur:GetChildren()) do
-				if d:IsA("TextLabel") and d.Text and d.Visible then
-					local m = d.Text:match("@([%w_]+)")
-					if m and #m >= 3 and m:lower() ~= "playername" then
-						info.username = m
-						return
+
+				-- Only check descendants if no direct child matched, and limit depth
+				if depth <= 3 then
+					for _, d in ipairs(cur:GetDescendants()) do
+						if d:IsA("TextLabel") and d.Text and d.Visible then
+							-- Skip elements that are clearly not the booth owner
+							local parentName = d.Parent and d.Parent.Name:lower() or ""
+							if parentName:find("title") or parentName:find("header") or parentName:find("name") or parentName:find("booth") or parentName:find("stand") or parentName:find("owner") then
+								local m = d.Text:match("@([%w_]+)")
+								if m and #m >= 3 and m:lower() ~= "playername" then
+									info.username = m
+									foundBooth = true
+									return
+								end
+							end
+						end
 					end
 				end
 			end
 		end
 	end)
-
 	-- 3. GetProductInfo for price, name, image (with caching to avoid HTTP 429)
 	if info.assetId then
 		local cached = _productInfoCache[info.assetId]
@@ -1311,6 +1335,7 @@ local function getInfo(itemFrame, forcePrice, forceAsset)
 					price = prod.PriceInRobux,
 					imageId = prod.IconImageAssetId,
 					creatorName = prod.Creator and prod.Creator.Name
+
 				}
 				if prod.Name and prod.Name ~= "" then info.name = prod.Name end
 				if prod.PriceInRobux and prod.PriceInRobux > 0 then info.price = prod.PriceInRobux end
@@ -1902,7 +1927,64 @@ end)
 
 
 local function getButtonId(obj) for name,val in pairs(obj:GetAttributes()) do if (name:lower():find("id")or name:lower():find("asset")) and type(val)=="number" then return val end end; for _,c in ipairs(obj:GetChildren()) do if (c.Name:lower():find("id")or c.Name:lower():find("asset")) and (c:IsA("NumberValue")or c:IsA("IntValue")) then return c.Value end end; if tonumber(obj.Name) then return tonumber(obj.Name) end; local id=obj.Name:match("Item(%d+)"); if id then return tonumber(id) end; if obj.Parent then local pid=obj.Parent.Name:match("Item(%d+)"); if pid then return tonumber(pid) end end; return nil end
-local function getUsernameCtx(btn) for _,c in ipairs(btn:GetDescendants()) do if (c:IsA("TextLabel")or c:IsA("TextButton")) and c.Text then local u=c.Text:match("@([%w_]+)"); if u then return u end end end; local cur=btn; for _=1,10 do cur=cur.Parent; if not cur then break end; for _,d in pairs(cur:GetDescendants()) do if d:IsA("TextLabel") and d.Text and d.Visible then local m=d.Text:match("@([%w_]+)"); if m and #m>=3 then return m end end end end; return nil end
+-- REPLACE the entire getUsernameCtx function:
+local function getUsernameCtx(btn) 
+	for _,c in ipairs(btn:GetDescendants()) do 
+		if (c:IsA("TextLabel")or c:IsA("TextButton")) and c.Text then 
+			local u=c.Text:match("@([%w_]+)"); 
+			if u then return u end 
+		end 
+	end; 
+	local cur=btn; 
+	for _=1,10 do 
+		cur=cur.Parent; 
+		if not cur then break end; 
+		for _,d in pairs(cur:GetDescendants()) do 
+			if d:IsA("TextLabel") and d.Text and d.Visible then 
+				local m=d.Text:match("@([%w_]+)"); 
+				if m and #m>=3 then return m end 
+			end 
+		end 
+	end; 
+	return nil 
+end
+
+-- WITH:
+local function getUsernameCtx(btn)
+	-- First: check the button's own text or immediate children
+	if btn:IsA("TextLabel") or btn:IsA("TextButton") then
+		local u = btn.Text:match("@([%w_]+)")
+		if u then return u end
+	end
+
+	for _, c in ipairs(btn:GetChildren()) do
+		if (c:IsA("TextLabel") or c:IsA("TextButton")) and c.Text then
+			local u = c.Text:match("@([%w_]+)")
+			if u then return u end
+		end
+	end
+
+	-- Walk up with strict limits
+	local cur = btn
+	for depth = 1, 5 do
+		cur = cur.Parent
+		if not cur then break end
+		if cur:IsA("ScreenGui") then break end
+
+		-- Check direct children first (more reliable)
+		for _, d in ipairs(cur:GetChildren()) do
+			if d:IsA("TextLabel") and d.Text and d.Visible then
+				local parentName = d.Parent and d.Parent.Name:lower() or ""
+				-- Only match labels in name/title/owner containers
+				if parentName:find("name") or parentName:find("title") or parentName:find("owner") or parentName:find("booth") or parentName:find("stand") or parentName:find("header") then
+					local m = d.Text:match("@([%w_]+)")
+					if m and #m >= 3 then return m end
+				end
+			end
+		end
+	end
+	return nil
+end
 local function hookBtn(btn)
 	if not (btn:IsA("TextButton") or btn:IsA("ImageButton")) then return end
 	if btn:FindFirstChild("__FD_Ov") then return end
@@ -1961,7 +2043,15 @@ local function hookBtn(btn)
 			end
 		end
 
-		print("CLICKED: boothOwner=" .. tostring(info.username) .. " price=" .. tostring(info.price) .. " userId=" .. tostring(info.userId) .. " name=" .. tostring(info.name))
+		print("=== CLICK DEBUG ===")
+		print("  AssetId: " .. tostring(cid))
+		print("  Detected Username: " .. tostring(info.username))
+		print("  Fallback Username: " .. tostring(getUsernameCtx(btn) or "NONE"))
+		print("  Price: " .. tostring(info.price))
+		print("  Name: " .. tostring(info.name))
+		print("  UserId: " .. tostring(info.userId))
+		print("  Button Path: " .. btn:GetFullName())
+		print("===================")
 		activePrompt.open(info)
 	end)
 end
